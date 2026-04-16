@@ -1,0 +1,23 @@
+# Loop Saboteur
+
+A glitch / chop / beat-slicer audio effect in the µ-Ziq / Aphex / OctaMed
+tradition. Captures the last ~4 bars of incoming audio into a rolling
+buffer and uses a host-synced step sequencer to sabotage it with
+retriggered, pitched, reversed, and crushed slices.
+
+AU / VST3 / Standalone on macOS. VST3 / Standalone on Windows.
+
+## Dependencies
+
+- [JUCE 8](https://github.com/juce-framework/JUCE)
+- CMake 3.22+
+- C++17 compiler
+
+## License
+
+Copyright 2025–2026 Stephen McLeod Blythe / AMFAS
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your
+option) any later version. See [LICENSE](LICENSE) for the full text.

@@ -1,0 +1,66 @@
+# Build output
+build/
+cmake-build-*/
+*.component/
+*.vst3/
+*.app/
+
+# JUCE is cloned (or symlinked) by developers locally, not vendored.
+JUCE/
+
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+DerivedData/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcuserstate
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+_deps/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs & temp
+*.log
+*.tmp
+
+# Source backups (auto-created by reload.sh)
+backups/
+
+# Local artefacts / archives
+*.zip
+*.dmg
+*.pkg
+
+# Local-only dev notes, generated output, tester docs
+_local/
+
+# Release pipeline build-number counter (local-only; each machine tracks
+# its own tester-drop sequence)
+.pkg_build_number
+build_release/

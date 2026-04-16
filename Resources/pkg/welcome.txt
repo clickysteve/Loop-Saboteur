@@ -1,0 +1,13 @@
+Loop Saboteur — glitch / beat-slicer / sabotage engine
+
+This installer will place three versions of Loop Saboteur on your Mac:
+
+  • Audio Unit (.component)  — for Logic, GarageBand, and other AU hosts
+  • VST3 (.vst3)             — for Ableton Live, Cubase, Studio One, REAPER
+  • Standalone (.app)        — runs on its own, no DAW required
+
+After install, restart your DAW and rescan plugins. Loop Saboteur will
+appear under AMFAS in the plugin browser.
+
+This is a private testing build. Please send feedback, bugs, and weird
+noises back to Steve. Breakage is expected — that is the whole point.

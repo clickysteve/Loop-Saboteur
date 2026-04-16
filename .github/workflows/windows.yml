@@ -1,0 +1,43 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:          # manual "Run workflow" button in GitHub UI
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Clone JUCE
+        run: git clone --depth 1 --branch 8.0.4 https://github.com/juce-framework/JUCE.git JUCE
+
+      - name: Configure (CMake + Visual Studio)
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build VST3
+        run: cmake --build build --config Release --target LoopSaboteur_VST3
+
+      - name: Extract version from CMakeLists.txt
+        id: version
+        shell: bash
+        run: |
+          ver=$(grep -oP 'project\(LoopSaboteur VERSION \K[0-9.]+' CMakeLists.txt)
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          mkdir -p staging
+          cp -r "build/LoopSaboteur_artefacts/Release/VST3/Loop Saboteur.vst3" staging/
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Loop-Saboteur-Windows-v${{ steps.version.outputs.ver }}
+          path: staging/
+          retention-days: 90
