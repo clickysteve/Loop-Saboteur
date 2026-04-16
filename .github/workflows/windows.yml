@@ -26,7 +26,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          ver=$(grep -oP 'project\(LoopSaboteur VERSION \K[0-9.]+' CMakeLists.txt)
+          ver=$(sed -n 's/.*project(LoopSaboteur VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
 
       - name: Package artifacts
