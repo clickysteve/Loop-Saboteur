@@ -64,3 +64,4 @@ _local/
 # its own tester-drop sequence)
 .pkg_build_number
 build_release/
+JUCE
