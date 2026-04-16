@@ -5,7 +5,7 @@ tradition. Captures the last ~4 bars of incoming audio into a rolling
 buffer and uses a host-synced step sequencer to sabotage it with
 retriggered, pitched, reversed, and crushed slices.
 
-AU / VST3 / Standalone on macOS. VST3 / Standalone on Windows.
+AU / VST3 on macOS. VST3 on Windows.
 
 ## Dependencies
 
