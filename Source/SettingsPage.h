@@ -767,7 +767,7 @@ inline void SettingsPage::paint (juce::Graphics& g)
     g.addTransform (juce::AffineTransform::translation (0.0f, -anchorY)
                         .sheared (-0.10f, 0.0f)
                         .translated (0.0f, anchorY));
-    g.drawText ("SETTINGS", titleR.reduced (16, 0), juce::Justification::centredLeft);
+    g.drawText ("TOOLS", titleR.reduced (16, 0), juce::Justification::centredLeft);
     g.restoreState();
 
     // v0.42 — hint line reflects the current view mode. PER-ACT mode
@@ -791,7 +791,7 @@ inline void SettingsPage::paint (juce::Graphics& g)
             ? juce::String ("GLOBAL   ") + dash + "   APPLIES TO ALL ACTS"
             : juce::String ("EDITING ACT ")
               + juce::String::charToString ((juce_wchar) ('A' + currentActIdx))
-              + "   " + dash + "   PER-ACT SETTINGS";
+              + "   " + dash + "   PER-ACT TOOLS";
         g.drawText (hintTxt, hintR, juce::Justification::centredLeft);
     }
 

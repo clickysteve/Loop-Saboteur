@@ -1128,6 +1128,15 @@ private:
     bool             fineMode = false;
     void             applyPitchSlideFineMode();
 
+    // Global MIX — horizontal slider above the Acts strip. Scales
+    // every Act's wet/dry mix so you can pull back the entire effect
+    // without touching individual per-Act knobs.
+    juce::Slider globalMixSlider;
+    juce::Label  globalMixLabel;
+    std::unique_ptr<SliderAttachment> globalMixAttachment;
+    bool         globalMixLockDirty = false;   // p-lock active on this step?
+    void         refreshGlobalMixHighlight();   // update track colour for mod/plock state
+
     // Act I/O — one button that opens a popup menu with
     // Export Current/All + Import Current/All. FileChooser is held as
     // a member so its async callback doesn't fire into a dead object.
@@ -1197,7 +1206,7 @@ private:
     // to whatever the host window currently is. Constrainer locks the
     // aspect ratio so the user can drag freely without squashing.
     static constexpr int kDesignW = 1100;
-    static constexpr int kDesignH = 852;
+    static constexpr int kDesignH = 876;
     juce::ComponentBoundsConstrainer resizeConstrainer;
     // v0.13 — the content container owns the AffineTransform so we no
     // longer need a reentrantResize guard; editor::resized() just

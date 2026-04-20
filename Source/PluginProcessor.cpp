@@ -227,18 +227,21 @@ namespace
     // drives slice length. Lets Steve have long slices on a fast grid or
     // vice versa.
     static const juce::StringArray kSeqRateChoices {
-        "1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"
+        "1/32", "1/16", "1/16T", "1/8", "1/8T", "1/4", "1/4T", "1/2", "1 bar"
     };
 
     inline double seqRateIndexToQuarters (int idx) noexcept
     {
         static const double vals[] = {
-            0.125,  // 1/32
-            0.25,   // 1/16
-            0.5,    // 1/8
-            1.0,    // 1/4
-            2.0,    // 1/2
-            4.0     // 1 bar
+            0.125,              // 1/32
+            0.25,               // 1/16
+            0.25  * 2.0 / 3.0, // 1/16T
+            0.5,                // 1/8
+            0.5   * 2.0 / 3.0, // 1/8T
+            1.0,                // 1/4
+            1.0   * 2.0 / 3.0, // 1/4T
+            2.0,                // 1/2
+            4.0                 // 1 bar
         };
         idx = juce::jlimit (0, (int) (sizeof(vals)/sizeof(vals[0])) - 1, idx);
         return vals[idx];
@@ -461,11 +464,16 @@ LoopSaboteurProcessor::createParameterLayout()
             .withStringFromValueFunction (bitsString)
             .withValueFromStringFunction (bitsValue)));
 
+    // v0.44 — RATE capped at ~2kHz. maxHold is SR-dependent but the
+    // APVTS string functions don't have access to the live SR, so we
+    // use a representative 44.1k (hold max ≈ 22). The real audio path
+    // and the editor display both use the actual SR at runtime.
     auto rateString = [] (float v, int /*maxLen*/)
     {
         if (v < 0.001f) return juce::String ("OFF");
         const float t = v * v;
-        const int hold = 1 + (int) (t * 47.0f);
+        const int maxHold = 22;  // ~2kHz @ 44.1k
+        const int hold = 1 + (int) (t * (float) (maxHold - 1));
         return juce::String ("/") + juce::String (hold);
     };
     auto rateValue = [] (const juce::String& text) -> float
@@ -473,8 +481,9 @@ LoopSaboteurProcessor::createParameterLayout()
         if (text.containsIgnoreCase ("off")) return 0.0f;
         const int hold = text.getTrailingIntValue();
         if (hold <= 1)  return 0.0f;
-        if (hold >= 48) return 1.0f;
-        return std::sqrt ((float) (hold - 1) / 47.0f);
+        const int maxHold = 22;
+        if (hold >= maxHold) return 1.0f;
+        return std::sqrt ((float) (hold - 1) / (float) (maxHold - 1));
     };
 
     layout.add (std::make_unique<APF>(
@@ -492,6 +501,17 @@ LoopSaboteurProcessor::createParameterLayout()
     // v0.13 — displayed as %.
     layout.add (std::make_unique<APF>(
         juce::ParameterID { kParamMix, 2 }, "Mix",
+        NR (0.0f, 1.0f, 0.001f), 0.5f,
+        juce::AudioParameterFloatAttributes()
+            .withStringFromValueFunction (pctString)
+            .withValueFromStringFunction (pctValue)));
+
+    // v0.42.6 — Global Mix: master wet/dry fader that scales ALL Acts'
+    // individual mix values. 100% = per-Act mix is used as-is. 0% = fully
+    // dry regardless of Act. NOT stored per-Act — it's a session-wide
+    // performance control.
+    layout.add (std::make_unique<APF>(
+        juce::ParameterID { kParamGlobalMix, 1 }, "Global Mix",
         NR (0.0f, 1.0f, 0.001f), 0.5f,
         juce::AudioParameterFloatAttributes()
             .withStringFromValueFunction (pctString)
@@ -778,7 +798,8 @@ namespace
         { LoopSaboteurProcessor::kParamSmear    },
         { LoopSaboteurProcessor::kParamStutter  },
         { LoopSaboteurProcessor::kParamChaos    },
-        { LoopSaboteurProcessor::kParamChance   }  // also lockable — per-step act chance override
+        { LoopSaboteurProcessor::kParamChance   }, // also lockable — per-step act chance override
+        { LoopSaboteurProcessor::kParamGlobalMix } // v0.42.6 — session-wide wet/dry scaler
     };
     static_assert ((int) (sizeof(kLockable) / sizeof(kLockable[0]))
                        == LoopSaboteurProcessor::kNumLockableParams,
@@ -942,6 +963,8 @@ LoopSaboteurProcessor::LoopSaboteurProcessor()
     pCrunch    = apvts.getRawParameterValue (kParamCrunch);
     pCrushRate = apvts.getRawParameterValue (kParamCrushRate);
     pMix       = apvts.getRawParameterValue (kParamMix);
+    pGlobalMix = apvts.getRawParameterValue (kParamGlobalMix);
+    globalMixLockSlot = lockableIndexForId (kParamGlobalMix);
     pFreeze    = apvts.getRawParameterValue (kParamFreeze);
     pSeqRate   = apvts.getRawParameterValue (kParamSeqRate);
     pDrive     = apvts.getRawParameterValue (kParamDrive);
@@ -1131,6 +1154,8 @@ void LoopSaboteurProcessor::initSceneDefaults()
         stepRatioVisit[i] = 0;
     ratioLastSeenSeqStep = -1;
     ratioLastAllowed     = true;
+    ratioPatternPlayCount = 0;
+    lastSeqStepAbsForRatio = -1;
     pendingRatchet = {};
 
     // P-lock array — NaN means "not locked".
@@ -1689,7 +1714,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // without destroying it, and Smear at 21% bleeds the tail into
     // the next hit for a dreamy, smudged quality. Full Mix / full
     // Chance so it takes over completely.
-    { "Glitch", "2am Trippy",
+    { "Atmosphere", "2am Trippy",
       2, 4, 3, 10, 9,
       0.0f, -2.0f, 0.4f, 0.0f, 0.13f, 0.0f, 1.0f, 1.0f,
       0.24f, 0.5f, 0.3f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1718,7 +1743,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // cranked to 91% with Res 26% gives it that squeaky, plasticky
     // sheen. Fold at 8% and Smear at 57% smudge the edges into a
     // gooey, cartoonish texture. Full Mix / full Chance.
-    { "Lo-Fi", "Rubber Ducky",
+    { "Experimental", "Rubber Ducky",
       0, 1, 3, 11, 9,
       5.0f, 0.0f, 0.56f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f,
       0.0f, 0.335f, 0.37f, 0.08f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1736,7 +1761,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // "Whip It" — snappy 1/4-note slices at 4x rate with light pitch
     // shimmer and moderate smear. Feedback and tape give it a loopy,
     // elastic quality that cracks like a whip on transients.
-    { "Glitch", "Whip It",
+    { "Experimental", "Whip It",
       5, 5, 6, 15, 4,
       0.33f, -1.12f, 0.35f, 0.19f, 0.16f, 0.0f, 0.78f, 0.79f,
       0.04f, 0.34f, 0.33f, 0.31f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1795,7 +1820,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // judders at 1/32 for a demonic, smeared-out organ drone. Tape at
     // 30% and smear at 69% give it a queasy, warped quality. Fold adds
     // grit.
-    { "Pads", "Satan's Organ",
+    { "Experimental", "Satan's Organ",
       2, 3, 2, 13, 3,
       0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.59f,
       0.13f, 0.27f, 0.29f, 0.30f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1821,6 +1846,8 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
          0.162f, 0.946f, 0.039f, 0.181f, 0.0f, 0.01f, 0.623f, 0.0f,
       /* shimmer, res, fold, gate, smear, stutter, chaos */
          0.594f, 0.0f, 0.319f, 0.0f, 0.459f, 0.0f, 0.0f,
+      /* crushAll, fxOnDryDrive, fxOnDryTone, fxOnDryRingMod, fxOnDryFold */
+         false, false, false, false, false,
       /* lfos[] — four sync'd sines parked in a rising stagger of rates
          (2 bars, 3 bars, 4 bars, 8 bars), all unassigned. Cosmetic — if
          the user wants motion they can assign targets, but the default
@@ -1878,7 +1905,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // copied verbatim from Steve's exported .lpsbact. Users who tweak
     // and like their own settings better can re-save via "Save as
     // user preset…".
-    { "Quantise These", "Pretty Machine",
+    { "Experimental", "Pretty Machine",
       /* div,look,rate,jud,judDiv */  2, 3, 2, 1, 3,
       /* pitch, slide, decay, rev, crunch, crushR, mix, chance */
          1.9999994f, -1.0000002f, 0.8000000f, 0.0f, 0.0f, 0.0f, 0.4960000f, 1.0f,
@@ -1886,6 +1913,8 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
          0.0f, 0.5f, 0.0f, 0.0f, 0.7480000f, 0.0f, 0.0f, 0.7270001f,
       /* shimmer, res, fold, gate, smear, stutter, chaos */
          0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0930000f,
+      /* crushAll, fxOnDryDrive, fxOnDryTone, fxOnDryRingMod, fxOnDryFold */
+         false, false, false, false, false,
       /* lfos[] — matches Steve's MOD-page screenshot. */
       {
           // MOD 1 — Saw on RING MOD (slot 16), FREE 1 Hz, depth -0.54.
@@ -1919,6 +1948,58 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
             /*trig*/ 0, /*xTarget*/ -1, /*xDepth*/ 1.0f }
       }
     },
+
+    // "Seek Out Space" — a shimmery delay/reverb wash with no pitch, no
+    // drive, no glitch — just space. 1/16 division with 1/32 lookback,
+    // 1x rate, 9 judders at 1/4 for a rolling diffusion tail. Shimmer
+    // at 68% builds an octave halo, Smear at 48% bleeds slices into a
+    // continuous wash, Stereo at 55% throws it wide. A whisper of Tape
+    // (4%) and Varispeed (3%) keeps it alive without wobbling. Tone
+    // tilted slightly bright, Mix at 64% so it wraps around the source
+    // rather than drowning it. No LFOs — what you dial is what you get.
+    { "Atmosphere", "Seek Out Space",
+      /* div,look,rate,jud,judDiv */  2, 2, 3, 9, 9,
+      /* pitch, slide, decay, rev, crunch, crushR, mix, chance */
+         0.0f, 0.0f, 0.80f, 0.0f, 0.0f, 0.0f, 0.64f, 1.0f,
+      /* drive, tone, feedback, tape, ringMod, varispeed, stereo, stretch */
+         0.0f, 0.60f, 0.0f, 0.04f, 0.0f, 0.03f, 0.55f, 0.0f,
+      /* shimmer, res, fold, gate, smear, stutter, chaos */
+         0.68f, 0.0f, 0.0f, 0.0f, 0.48f, 0.0f, 0.0f },
+
+    // "Cup Fungus" — dark, crusty lo-fi texture. 1/16 division with 1/16
+    // lookback, single judder at 1/32 so it's one simple chop per hit.
+    // The character comes from the PAULA section: 8-bit crush with /3
+    // sample-rate decimation applied to the whole signal (crushAll on).
+    // Tone rolled way dark (69%), Tape at 43% adds heavy flutter, and
+    // a touch of Stretch (13%) smears the slices. Shimmer at 32% and
+    // Varispeed 9% add subtle movement. Full mix, full chance.
+    { "Lo-Fi", "Cup Fungus",
+      /* div,look,rate,jud,judDiv */  2, 3, 3, 1, 3,
+      /* pitch, slide, decay, rev, crunch, crushR, mix, chance */
+         0.0f, 0.0f, 0.80f, 0.0f, 0.571f, 0.206f, 1.0f, 1.0f,
+      /* drive, tone, feedback, tape, ringMod, varispeed, stereo, stretch */
+         0.0f, 0.155f, 0.0f, 0.43f, 0.0f, 0.09f, 0.0f, 0.13f,
+      /* shimmer, res, fold, gate, smear, stutter, chaos */
+         0.32f, 0.0f, 0.0f, 0.0f, 0.03f, 0.0f, 0.0f,
+      /* crushAll */ true },
+
+    // "Pattern Gap Handler" — 1/4 division with 1/64 lookback for a wide
+    // slice that grabs a very recent micro-window. No pitch shift, no
+    // judder, so it's a straight chop at quarter-note boundaries — great
+    // for filling gaps in drum patterns with glitchy fragments. The colour
+    // comes from FOLD (54%) and SHIMMER (68%) stacking harmonic crunch on
+    // top of aliased HF sparkle, with DRIVE (35%) warming the result.
+    // VARISPEED (56%) adds a drunken speed-drift to each slice, and
+    // STUTTER (55%) micro-loops the tail for a buzzy digital decay. BITS
+    // at 13-bit dusts the surface with lo-fi grit. Full Mix / full Chance.
+    { "Drums", "Pattern Gap Handler",
+      /* div,look,rate,jud,judDiv */  5, 1, 1, 1, 1,
+      /* pitch, slide, decay, rev, crunch, crushR, mix, chance */
+         0.0f, 0.0f, 0.58f, 0.0f, 0.214f, 0.0f, 1.0f, 1.0f,
+      /* drive, tone, feedback, tape, ringMod, varispeed, stereo, stretch */
+         0.35f, 0.5f, 0.0f, 0.0f, 0.0f, 0.56f, 0.0f, 0.0f,
+      /* shimmer, res, fold, gate, smear, stutter, chaos */
+         0.68f, 0.0f, 0.54f, 0.0f, 0.0f, 0.55f, 0.0f },
 };
 
 int LoopSaboteurProcessor::getNumActPresets() noexcept
@@ -1970,6 +2051,13 @@ void LoopSaboteurProcessor::applyActPreset (int sceneIdx, int presetIdx)
     s.smear   .store (p.smear);
     s.stutter .store (p.stutter);
     s.chaos   .store (p.chaos);
+
+    // v0.43 — apply FX-on-dry flags carried by the preset.
+    s.crushAll      .store (p.crushAll);
+    s.fxOnDryDrive  .store (p.fxOnDryDrive);
+    s.fxOnDryTone   .store (p.fxOnDryTone);
+    s.fxOnDryRingMod.store (p.fxOnDryRingMod);
+    s.fxOnDryFold   .store (p.fxOnDryFold);
 
     // v0.38 — also apply the 4 MODs carried by this preset. Reset first
     // so a preset that uses fewer than 4 MODs actively wipes any stale
@@ -2705,6 +2793,8 @@ void LoopSaboteurProcessor::clearAllSteps()
     currentPlayingStep.store (-1);
     ratioLastSeenSeqStep = -1;
     ratioLastAllowed     = true;
+    ratioPatternPlayCount = 0;
+    lastSeqStepAbsForRatio = -1;
     pendingRatchet = {};
     applyAutoFollowIfEnabled();
 }
@@ -3063,6 +3153,13 @@ float LoopSaboteurProcessor::getPeak (int idx) const noexcept
 void LoopSaboteurProcessor::setSeqLength (int newLength)
 {
     seqLength.store (juce::jlimit (2, kMaxSteps, newLength));
+    // v0.43 — reset step tracking so the new length is picked up
+    // cleanly. Without this, curSeqStepAbs % newLen can land on a
+    // surprising step, and restarting transport inherits the stale
+    // wrappedStep cache.
+    lastWrappedStep = -1;
+    ratioPatternPlayCount = 0;
+    lastSeqStepAbsForRatio = -1;
 }
 
 void LoopSaboteurProcessor::setSeqOn (bool on)
@@ -3365,6 +3462,7 @@ void LoopSaboteurProcessor::applyStepLocks (ShapingParams& p, int stepIdx) const
     overlayFloat (kParamSmear,     p.smear,        0.0f, 1.0f);
     overlayFloat (kParamStutter,   p.stutter,      0.0f, 1.0f);
     overlayFloat (kParamChaos,     p.chaos,        0.0f, 1.0f);
+    overlayFloat (kParamGlobalMix, p.globalMix,    0.0f, 1.0f);
     // kParamChance is present in the lock slot list so it shows up in
     // lock edit UI but it's applied at the decision site, not here.
 }
@@ -3385,6 +3483,7 @@ LoopSaboteurProcessor::ShapingParams LoopSaboteurProcessor::paramsFromKnobs() co
     p.crunch        = juce::jlimit (0.0f, 1.0f, pCrunch   ->load());
     p.crushRate     = juce::jlimit (0.0f, 1.0f, pCrushRate->load());
     p.mix           = juce::jlimit (0.0f, 1.0f, pMix      ->load());
+    p.globalMix     = juce::jlimit (0.0f, 1.0f, pGlobalMix->load());
     p.drive         = juce::jlimit (0.0f, 1.0f,  pDrive   ->load());
     p.tone          = juce::jlimit (0.0f, 1.0f,  pTone    ->load());
     p.feedback      = juce::jlimit (0.0f, 0.95f, pFeedback->load());
@@ -3476,6 +3575,7 @@ LoopSaboteurProcessor::ShapingParams LoopSaboteurProcessor::paramsFromKnobs() co
     applyMod (p.smear,         kParamSmear,     0.0f, 1.0f);
     applyMod (p.stutter,       kParamStutter,   0.0f, 1.0f);
     applyMod (p.chaos,         kParamChaos,     0.0f, 1.0f);
+    applyMod (p.globalMix,    kParamGlobalMix, 0.0f, 1.0f);
 
     return p;
 }
@@ -3498,6 +3598,7 @@ LoopSaboteurProcessor::ShapingParams LoopSaboteurProcessor::paramsFromScene (int
     p.crunch        = juce::jlimit (0.0f, 1.0f, s.crunch       .load());
     p.crushRate     = juce::jlimit (0.0f, 1.0f, s.crushRate    .load());
     p.mix           = juce::jlimit (0.0f, 1.0f, s.mix          .load());
+    p.globalMix     = juce::jlimit (0.0f, 1.0f, pGlobalMix->load()); // session-wide, not per-Act
     p.drive         = juce::jlimit (0.0f, 1.0f,  s.drive   .load());
     p.tone          = juce::jlimit (0.0f, 1.0f,  s.tone    .load());
     p.feedback      = juce::jlimit (0.0f, 0.95f, s.feedback.load());
@@ -3559,6 +3660,7 @@ LoopSaboteurProcessor::ShapingParams LoopSaboteurProcessor::paramsFromScene (int
     applyMod (p.smear,         kParamSmear,     0.0f, 1.0f);
     applyMod (p.stutter,       kParamStutter,   0.0f, 1.0f);
     applyMod (p.chaos,         kParamChaos,     0.0f, 1.0f);
+    applyMod (p.globalMix,    kParamGlobalMix, 0.0f, 1.0f);
 
     return p;
 }
@@ -3567,7 +3669,7 @@ LoopSaboteurProcessor::ShapingParams LoopSaboteurProcessor::paramsFromScene (int
 // instant a grid boundary crossing decides to fire, no matter whether
 // the params came from the knobs or from a stored scene — this keeps
 // freehand mode and sequencer mode sharing one engine.
-void LoopSaboteurProcessor::fireVoice (const ShapingParams& params, double samplesPerQuarter, int sourceSceneIdx)
+void LoopSaboteurProcessor::fireVoice (const ShapingParams& params, double samplesPerQuarter, int sourceSceneIdx, double durationOverrideQ, double slicePosOverride)
 {
     // Unpack the ShapingParams locally for clarity.
     const int    divisionIdx   = params.divisionIdx;
@@ -3580,7 +3682,10 @@ void LoopSaboteurProcessor::fireVoice (const ShapingParams& params, double sampl
     const float  decay         = params.decay;
     const float  reverseChance = params.reverseChance;
 
-    const double divisionQ  = divisionIndexToQuarters  (divisionIdx);
+    // v0.44 — ratchet sub-fires override the division length so
+    // each sub-hit fills exactly its share of the step duration.
+    const double divisionQ  = (durationOverrideQ > 0.0) ? durationOverrideQ
+                                                        : divisionIndexToQuarters (divisionIdx);
     const double lookbackQ  = lookbackIndexToQuarters  (lookbackIdx);
     const double judderDivQ = judderDivIndexToQuarters (judderDivIdx);
     const double rateMult   = rateIndexToMultiplier    (rateIdx);
@@ -3598,7 +3703,13 @@ void LoopSaboteurProcessor::fireVoice (const ShapingParams& params, double sampl
         return s;
     };
 
-    const double sliceStartPos = wrapSamplePos ((double) writePos - lookbackSamples);
+    // v0.44 — ratchet retrigger: if a slice position override is
+    // provided, replay from that exact buffer position instead of
+    // computing a new one from writePos-lookback. This makes ratchet
+    // sub-fires replay the same chop as the first hit.
+    const double sliceStartPos = (slicePosOverride >= 0.0)
+        ? slicePosOverride
+        : wrapSamplePos ((double) writePos - lookbackSamples);
 
     // Slice length = one full division (in output samples). Judder
     // subdivides this into N hits of judderDivSamples each.
@@ -3669,7 +3780,9 @@ void LoopSaboteurProcessor::fireVoice (const ShapingParams& params, double sampl
     // Bake per-voice mix and crunch from the ShapingParams so scenes
     // can own their own dry/wet and grit independently of any global
     // live knob movement.
-    voice.voiceMix    = params.mix;
+    // v0.42.6 — global mix scales the per-Act mix. Both mod offset
+    // and per-step p-locks have already been baked into params.globalMix.
+    voice.voiceMix    = params.mix * params.globalMix;
     voice.voiceCrunch    = params.crunch;
     voice.voiceCrushRate = params.crushRate;
 
@@ -3808,9 +3921,10 @@ void LoopSaboteurProcessor::applyCrunch (float& l, float& r, float bitAmount, fl
     if (hasRate)
     {
         // Quadratic curve: gentle at low values, aggressive at high.
-        // 0% = 1 (passthrough), 100% = 48 (~900 Hz at 44.1k).
+        // v0.44 — cap at ~2kHz effective rate regardless of session SR.
+        const int maxHold = juce::jmax (2, (int) (sampleRate / 2000.0));
         const float t  = rateAmount * rateAmount;
-        const int srHold = 1 + (int) (t * 47.0f);
+        const int srHold = 1 + (int) (t * (float) (maxHold - 1));
 
         // Jittered hold period for organic, hardware-like feel.
         int holdPeriod = srHold;
@@ -3945,6 +4059,7 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         seqOriginSet = false;
         lastExpectedStep = 0;
         seqSampleCounter = 0;
+        lastSeqStepAbsForRatio = -1;
         currentPlayingStep.store (-1);  // v0.18 — clear playhead so step 0 registers as a change on next play
     }
 
@@ -3960,6 +4075,8 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         seqSampleCounter = 0;   // v0.29 — reset step counter on play
         lastPpq          = -1.0;
         lastWrappedStep  = -1;
+        ratioPatternPlayCount = 0;  // v0.43 — reset on play start
+        lastSeqStepAbsForRatio = -1;
         // v0.38 — conditional-trigger state resets on each transport
         // play-start. ONCE re-arms (fires its single hit again); IF PREV
         // / NOT PREV start with a clean "nothing fired yet" history so
@@ -4058,12 +4175,17 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             samplePpq = ppqStart + (double) i * quartersPerSample;
             if (seqEnabled)
             {
-                // v0.29 — PPQ-locked step pointer. Derive the step
-                // directly from the DAW's absolute PPQ position so the
-                // sequencer is always bar-aligned with the host grid.
-                // No origin latching — the step is a pure function of
-                // PPQ, so loops, scrubs, and count-in all Just Work.
-                curSeqStepAbs = (long long) std::floor (samplePpq / seqStepQ);
+                // v0.44 — origin-latched step pointer. On the first
+                // playing sample after transport starts, record the PPQ
+                // as the origin. All subsequent step calculations are
+                // relative to that origin so the sequencer always starts
+                // from step 0 regardless of which bar the DAW plays from.
+                if (! seqOriginSet)
+                {
+                    seqOriginStep = (long long) std::floor (samplePpq / seqStepQ);
+                    seqOriginSet  = true;
+                }
+                curSeqStepAbs = (long long) std::floor (samplePpq / seqStepQ) - seqOriginStep;
                 // Ensure non-negative (negative PPQ during count-in).
                 if (curSeqStepAbs < 0) curSeqStepAbs = 0;
 
@@ -4127,6 +4249,19 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 // ratchet) on blank-step entry so the dry signal resumes.
                 if (wrappedStep != lastWrappedStep)
                 {
+                    // v0.44 — detect pattern wrap for ratio counter.
+                    // Only count wraps that happen due to forward playback
+                    // (curSeqStepAbs advancing past a seqLen boundary).
+                    // Backward jumps (DAW loop) are ignored so the ratio
+                    // counter doesn't double-increment on loop points.
+                    if (lastSeqStepAbsForRatio >= 0
+                        && curSeqStepAbs > lastSeqStepAbsForRatio
+                        && (curSeqStepAbs / seqLen) > (lastSeqStepAbsForRatio / seqLen))
+                    {
+                        ratioPatternPlayCount++;
+                    }
+                    lastSeqStepAbsForRatio = curSeqStepAbs;
+
                     lastWrappedStep = wrappedStep;
 
                     const bool stepMuted  = stepMute[wrappedStep].load();
@@ -4138,8 +4273,10 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                     const bool stepBlank  = ! (hasScene || hasLocks || hasRatchet
                                                 || hasFreeze || hasRatio);
 
-                    if (stepMuted || stepBlank)
+                    if (stepMuted)
                     {
+                        // v0.44 — muted steps are hard kills: silence
+                        // the voice AND cancel any in-flight ratchet.
                         if (voice.active)
                         {
                             voice.samplesRemaining = juce::jmin (voice.samplesRemaining,
@@ -4147,6 +4284,18 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                             voice.fadingIn = false;
                         }
                         pendingRatchet.remaining = 0;
+                    }
+                    else if (stepBlank)
+                    {
+                        // v0.44 — blank steps kill the voice but let
+                        // any in-flight ratchet from the previous step
+                        // play out its remaining sub-fires.
+                        if (voice.active && pendingRatchet.remaining <= 0)
+                        {
+                            voice.samplesRemaining = juce::jmin (voice.samplesRemaining,
+                                                                 PlaybackVoice::kAntiClickSamples);
+                            voice.fadingIn = false;
+                        }
                     }
                 }
             }
@@ -4558,9 +4707,48 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                         // Build the ShapingParams base: Act if stamped,
                         // otherwise the live knob values. Then overlay any
                         // per-step parameter locks.
+                        // v0.44 — scene-less steps with ratchet re-trigger
+                        // the dry audio from the buffer with no FX colouring.
+                        // Keep structural params (division, lookback, rate)
+                        // from the knobs so timing is sensible, but zero all
+                        // effects and set mix to 1 (fully wet = buffer
+                        // playback of the captured dry input).
+                        const bool scenelessRatchet = (activeSceneForFire < 0)
+                            && stepRatchet[wrappedStep].load() > 1;
                         ShapingParams params = (activeSceneForFire >= 0)
                             ? paramsFromScene (activeSceneForFire)
                             : paramsFromKnobs();
+                        if (scenelessRatchet)
+                        {
+                            // v0.44 — clean dry retrigger: grab the most
+                            // recent audio (shortest lookback), play at
+                            // unity rate, no FX, no pitch, no judder.
+                            params.lookbackIdx = 0;   // 1/128 — grab what just came in
+                            params.rateIdx     = 3;   // 1× playback speed
+                            params.judderCount = 1;   // no stutter
+                            params.mix         = 1.0f;
+                            params.globalMix   = 1.0f;
+                            params.pitchSt     = 0.0f;
+                            params.slideSt     = 0.0f;
+                            params.reverseChance = 0.0f;
+                            params.decay       = 1.0f;
+                            params.crunch      = 0.0f;
+                            params.crushRate   = 0.0f;
+                            params.drive       = 0.0f;
+                            params.tone        = 0.0f;
+                            params.feedback    = 0.0f;
+                            params.tape        = 0.0f;
+                            params.ringMod     = 0.0f;
+                            params.varispeed   = 0.0f;
+                            params.stretch     = 0.0f;
+                            params.shimmer     = 0.0f;
+                            params.res         = 0.0f;
+                            params.fold        = 0.0f;
+                            params.smear       = 0.0f;
+                            params.stutter     = 0.0f;
+                            params.chaos       = 0.0f;
+                            params.stereo      = 0.0f;
+                        }
                         applyStepLocks (params, wrappedStep);
 
                         // Decide whether this visit fires. Two paths:
@@ -4591,10 +4779,13 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                             if (n > 0 && m > 0)
                             {
                                 // Classic A:B ratio.
+                                // v0.43 — use ratioPatternPlayCount (wraps
+                                // independently of DAW PPQ) instead of
+                                // curSeqStepAbs / seqLen, which repeats the
+                                // same value when the DAW loops a section.
                                 if (ratioLastSeenSeqStep != curSeqStepAbs)
                                 {
-                                    const long long patternPlay = curSeqStepAbs / (long long) seqLen;
-                                    const int playIndex = (int) (((patternPlay % m) + m) % m);
+                                    const int playIndex = (int) (((ratioPatternPlayCount % m) + m) % m);
                                     ratioLastAllowed = (playIndex == (n - 1));
                                     ratioLastSeenSeqStep = curSeqStepAbs;
                                 }
@@ -4676,7 +4867,12 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                         {
                             // v0.41 — stamp the source Act onto the fire so
                             // the voice bakes that Act's engine character.
-                            fireVoice (params, samplesPerQuarter, activeSceneForFire);
+                            // v0.44 — if this step has ratchet, shorten
+                            // the first fire to match the ratchet interval
+                            // so all sub-hits are equal length.
+                            const int ratchet = stepRatchet[wrappedStep].load();
+                            const double ratchetDurQ = (ratchet > 1) ? (seqStepQ / (double) ratchet) : 0.0;
+                            fireVoice (params, samplesPerQuarter, activeSceneForFire, ratchetDurQ);
                             // v0.34 — "Slice" envelope trigger. Every
                             // actual voice fire counts (including the
                             // first of a ratchet group; subsequent ratchet
@@ -4692,15 +4888,19 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                             // on a new ratcheted step while still mid-
                             // ratchet from the previous one restarts
                             // cleanly instead of overlapping.
-                            const int ratchet = stepRatchet[wrappedStep].load();
                             if (ratchet > 1)
                             {
-                                pendingRatchet.remaining   = ratchet - 1;
-                                pendingRatchet.intervalPpq = seqStepQ / (double) ratchet;
-                                pendingRatchet.nextFirePpq = samplePpq + pendingRatchet.intervalPpq;
-                                pendingRatchet.params      = params;
-                                pendingRatchet.samplesPerQ = samplesPerQuarter;
-                                pendingRatchet.sceneIdx    = activeSceneForFire;
+                                pendingRatchet.remaining    = ratchet - 1;
+                                pendingRatchet.intervalPpq  = seqStepQ / (double) ratchet;
+                                pendingRatchet.nextFirePpq  = samplePpq + pendingRatchet.intervalPpq;
+                                pendingRatchet.params       = params;
+                                pendingRatchet.samplesPerQ  = samplesPerQuarter;
+                                pendingRatchet.sceneIdx     = activeSceneForFire;
+                                pendingRatchet.subDurationQ = pendingRatchet.intervalPpq;
+                                // v0.44 — capture the slice position from the
+                                // first fire so sub-fires retrigger the same chop.
+                                pendingRatchet.sliceStartPos = voice.retrigStartPos;
+                                pendingRatchet.hasSlicePos   = true;
                             }
                             else
                             {
@@ -4767,7 +4967,8 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             while (pendingRatchet.remaining > 0
                    && samplePpq >= pendingRatchet.nextFirePpq)
             {
-                fireVoice (pendingRatchet.params, pendingRatchet.samplesPerQ, pendingRatchet.sceneIdx);
+                fireVoice (pendingRatchet.params, pendingRatchet.samplesPerQ, pendingRatchet.sceneIdx, pendingRatchet.subDurationQ,
+                          pendingRatchet.hasSlicePos ? pendingRatchet.sliceStartPos : -1.0);
                 // v0.34 — each ratchet sub-hit is a "Slice" for env
                 // retrigger purposes, but does NOT count as an active
                 // step (that already fired for the parent step above).
@@ -4875,6 +5076,44 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 // a slice keeps its character through Act changes.
                 sliceL = readBufferInterp (0, voice.readPos, voice.voiceInterpMode);
                 sliceR = (numChannels > 1) ? readBufferInterp (1, voice.readPos, voice.voiceInterpMode) : sliceL;
+            }
+
+            // v0.43 — judder crossfade: equal-power blend old grain tail
+            // into new grain start to eliminate clicks at retrigger
+            // boundaries. Cosine curve avoids the -6 dB mid-dip that
+            // a linear crossfade produces on uncorrelated signals
+            // (reversed grains, different pitch, etc.).
+            // The old grain uses its pre-decay gain level so the
+            // crossfade doesn't introduce a sudden level jump.
+            if (voice.judderXfadeRemaining > 0)
+            {
+                const float phase = (float) voice.judderXfadeRemaining
+                                  / (float) PlaybackVoice::kJudderXfadeSamples;
+                // phase goes from 1→0. Equal-power: cos/sin pair.
+                const float xfOld = std::cos ((1.0f - phase)
+                                    * juce::MathConstants<float>::halfPi);
+                const float xfNew = std::sin ((1.0f - phase)
+                                    * juce::MathConstants<float>::halfPi);
+                float oldL = readBufferInterp (0, voice.judderOldReadPos, voice.voiceInterpMode);
+                float oldR = (numChannels > 1)
+                    ? readBufferInterp (1, voice.judderOldReadPos, voice.voiceInterpMode) : oldL;
+                // Compensate for the gain difference: old grain was at
+                // judderOldGain, new grain is at currentGain. Scale old
+                // samples so the blend doesn't jump in level.
+                if (voice.currentGain > 0.0001f)
+                {
+                    const float gainComp = voice.judderOldGain / voice.currentGain;
+                    oldL *= gainComp;
+                    oldR *= gainComp;
+                }
+                sliceL = sliceL * xfNew + oldL * xfOld;
+                sliceR = sliceR * xfNew + oldR * xfOld;
+                voice.judderOldReadPos += voice.judderOldRate;
+                if (voice.judderOldReadPos >= (double) circularBufferSize)
+                    voice.judderOldReadPos -= (double) circularBufferSize;
+                if (voice.judderOldReadPos < 0.0)
+                    voice.judderOldReadPos += (double) circularBufferSize;
+                voice.judderXfadeRemaining--;
             }
 
             // v0.22 — skip per-voice crush when "All audio" mode is on
@@ -5285,10 +5524,17 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
             // Judder: when the countdown hits zero, jump back to the
             // slice start, apply the per-judder Slide, and refill.
+            // v0.43 — crossfade: save old readPos/rate so we can blend
+            // old tail → new start over kAntiClickSamples.
             if (voice.juddersRemaining > 0)
             {
                 if (--voice.judderCountdown <= 0)
                 {
+                    voice.judderOldReadPos     = voice.readPos;
+                    voice.judderOldRate        = voice.rate;
+                    voice.judderOldGain        = voice.currentGain;
+                    voice.judderXfadeRemaining = PlaybackVoice::kJudderXfadeSamples;
+
                     voice.readPos         = voice.retrigStartPos;
                     voice.rate           *= voice.slideFactor; // slide scales magnitude,
                                                                // sign preserved → reverse slides too
@@ -5338,16 +5584,25 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 }
                 case kStereoHaas:      // micro-delay on one channel
                 {
+                    // v0.43 — rewritten to use a tiny ring buffer instead
+                    // of reading raw from the circular buffer. The old
+                    // approach jumped on judder retrigger because it read
+                    // from voice.readPos which resets abruptly. Now we
+                    // delay the already-crossfaded slice signal, which is
+                    // click-free.
                     const int delaySamples = voice.stereoHaasSamples;
-                    if (delaySamples > 0)
+                    if (delaySamples > 0 && delaySamples < PlaybackVoice::kHaasDelayMax)
                     {
-                        double delayedPos = voice.readPos - (double) delaySamples;
-                        if (delayedPos < 0.0) delayedPos += (double) circularBufferSize;
-                        const int delayIdx = wrappedBufferIndex (delayedPos);
+                        // Write current sample into the Haas ring buffer
+                        voice.haasBuffer[0][voice.haasWritePos] = sliceL;
+                        voice.haasBuffer[1][voice.haasWritePos] = sliceR;
+                        int readIdx = voice.haasWritePos - delaySamples;
+                        if (readIdx < 0) readIdx += PlaybackVoice::kHaasDelayMax;
                         if (voice.stereoPan > 0.0f)
-                            sliceR = cb[1][delayIdx];
+                            sliceR = voice.haasBuffer[1][readIdx];
                         else
-                            sliceL = cb[0][delayIdx];
+                            sliceL = voice.haasBuffer[0][readIdx];
+                        voice.haasWritePos = (voice.haasWritePos + 1) % PlaybackVoice::kHaasDelayMax;
                     }
                     break;
                 }
@@ -5380,12 +5635,16 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             }
             else
             {
-                // True crossfade: per-voice mix replaces dry with wet.
+                // v0.44 — equal-power crossfade: cos/sin curves so the
+                // midpoint sits at ~-3dB per leg instead of -6dB linear,
+                // eliminating the perceived volume dip at mid-mix.
                 const float wet = voice.voiceMix;
-                const float dry = 1.0f - wet;
-                io[0][i] = io[0][i] * dry + sliceL * wet;
+                const float phase = wet * juce::MathConstants<float>::halfPi;
+                const float gDry = std::cos (phase);
+                const float gWet = std::sin (phase);
+                io[0][i] = io[0][i] * gDry + sliceL * gWet;
                 if (numChannels > 1)
-                    io[1][i] = io[1][i] * dry + sliceR * wet;
+                    io[1][i] = io[1][i] * gDry + sliceR * gWet;
             }
 
             // FEEDBACK: inject the voice output back into the
@@ -5420,9 +5679,14 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             sb[1][smearWritePos] = feedR + delayedR * fb;
 
             const float sendLevel = smearFeedAmount * 0.7f;
-            io[0][i] += delayedL * sendLevel;
+            // Scale smear send by effective mix so MIX 0% = pure dry.
+            // When global FX are on, step 4c's crossfade handles this;
+            // when they're off, smear was leaking through unscaled.
+            const float smearMix = anyGlobalFx ? sendLevel
+                : sendLevel * juce::jlimit (0.0f, 1.0f, pMix->load() * pGlobalMix->load());
+            io[0][i] += delayedL * smearMix;
             if (numChannels > 1)
-                io[1][i] += delayedR * sendLevel;
+                io[1][i] += delayedR * smearMix;
 
             if (++smearWritePos >= smearBufferSize)
                 smearWritePos = 0;
@@ -5574,7 +5838,9 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         //     we skip this to avoid double-mixing.
         if (anyGlobalFx)
         {
-            const float mix = pMix->load();
+            const float gmMod = (globalMixLockSlot >= 0) ? lfoModOffset[globalMixLockSlot] : 0.0f;
+            const float gm = juce::jlimit (0.0f, 1.0f, pGlobalMix->load() + gmMod);
+            const float mix = pMix->load() * gm;
             if (mix < 0.9999f)
             {
                 const float dry = 1.0f - mix;

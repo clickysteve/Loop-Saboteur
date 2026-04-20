@@ -109,6 +109,7 @@ public:
         float crunch        = 0.0f;   // bit-depth reduction (0 = 16-bit, 1 = ~2-bit)
         float crushRate     = 0.0f;   // v0.21 — S&H decimation (0 = off, 1 = extreme)
         float mix           = 0.5f;
+        float globalMix     = 0.5f;   // v0.42.6 — session-wide scaler (not per-Act)
 
         // Tape/sampler FX row — all per-Act, all bake into scenes.
         float drive         = 0.0f;  // pre-voice tanh saturation
@@ -273,6 +274,13 @@ public:
         float pitchSt, slideSt, decay, reverseChance, crunch, crushRate, mix, chance;
         float drive, tone, feedback, tape, ringMod, varispeed, stereo, stretch;
         float shimmer, res, fold, gate, smear, stutter, chaos;
+        // v0.43 — optional FX-on-dry flags. Defaults to all off so
+        // existing aggregate-init entries compile unchanged.
+        bool crushAll      = false;
+        bool fxOnDryDrive  = false;
+        bool fxOnDryTone   = false;
+        bool fxOnDryRingMod= false;
+        bool fxOnDryFold   = false;
         // v0.38 — optional MOD section. Defaults leave all 4 LFOs Off
         // so old aggregate-init entries continue to compile unchanged
         // and behave identically (no modulation applied).
@@ -413,7 +421,7 @@ public:
     // Each step can override any number of the 24 knob parameters with
     // its own value. NaN = not locked (inherit from the Act). These are
     // overlaid on top of the Act's baked ShapingParams at fire time.
-    static constexpr int kNumLockableParams = 28;  // v0.25 — +stretch
+    static constexpr int kNumLockableParams = 29;  // v0.42.6 — +globalMix
 
     // Map an APVTS parameter ID to a lock-slot index [0..kNumLockableParams-1].
     // Returns -1 if the ID isn't lockable. Used by both the editor and
@@ -1052,6 +1060,7 @@ public:
     static constexpr const char* kParamCrunch    = "crunch";    // bit-depth (was combined crush)
     static constexpr const char* kParamCrushRate = "crushrate"; // v0.21 — S&H decimation rate
     static constexpr const char* kParamMix       = "mix";
+    static constexpr const char* kParamGlobalMix = "globalmix";
     static constexpr const char* kParamFreeze    = "freeze";
     static constexpr const char* kParamSeqRate   = "seqrate";
 
@@ -1107,6 +1116,8 @@ private:
     std::atomic<float>* pCrunch    = nullptr;
     std::atomic<float>* pCrushRate = nullptr;
     std::atomic<float>* pMix       = nullptr;
+    std::atomic<float>* pGlobalMix = nullptr;
+    int                 globalMixLockSlot = -1;  // cached lockableIndexForId result
     std::atomic<float>* pFreeze    = nullptr;
     std::atomic<float>* pSeqRate   = nullptr;
     std::atomic<float>* pDrive     = nullptr;
@@ -1150,6 +1161,7 @@ private:
     // v0.14 — track the last sequencer step so muted-step cuts trigger
     // on step entry, not just on fire-grid boundaries.
     int lastWrappedStep = -1;
+    long long lastSeqStepAbsForRatio = -1;  // v0.44 — forward-only wrap detection
 
     juce::Random rng;
 
@@ -1179,6 +1191,10 @@ private:
     // cache only protects multi-fire bursts inside a single visit.
     long long ratioLastSeenSeqStep = -1;
     bool      ratioLastAllowed     = true;
+    // v0.43 — independent pattern-play counter for ratio A:B. Increments
+    // each time the sequencer wraps, independent of DAW PPQ. Fixes ratios
+    // being stuck when the DAW loops a section (PPQ repeats identically).
+    long long ratioPatternPlayCount = 0;
 
     // v0.38 — per-step bookkeeping for conditional-trigger kinds.
     //   stepLastFireResult[i] — remembered from the most recent visit
@@ -1226,6 +1242,9 @@ private:
         ShapingParams  params;                // cached — same voice for every sub-fire
         double         samplesPerQ   = 0.0;   // snapshot for fireVoice
         int            sceneIdx      = -1;    // v0.41 — Act stamp for engine bake
+        double         subDurationQ  = 0.0;   // v0.44 — ratchet sub-fire duration (quarters)
+        double         sliceStartPos = 0.0;   // v0.44 — captured buffer position from first fire
+        bool           hasSlicePos   = false;  // v0.44 — true when sliceStartPos is valid
     };
     PendingRatchet pendingRatchet;
 
@@ -1467,6 +1486,12 @@ private:
         double stereoLfoPhase    = 0.0;    // auto-pan LFO phase
         int    stereoHaasSamples = 0;      // haas delay in samples (0..~30ms)
         int    stereoModeCache   = 0;      // cached mode at fire time
+        // v0.43 — Haas micro-delay ring buffer. Delays the already-
+        // crossfaded slice signal instead of reading raw from the
+        // circular buffer, avoiding clicks on judder retrigger.
+        static constexpr int kHaasDelayMax = 1536; // ~35ms @ 44.1k
+        float  haasBuffer[2][kHaasDelayMax] = {};
+        int    haasWritePos       = 0;
 
         // v0.25 — granular time-stretch state. Two overlapping grains
         // read at normal speed (preserving pitch) while a source cursor
@@ -1549,9 +1574,20 @@ private:
         // v0.30 — anti-click micro-fade on voice start/end. fadeGain
         // ramps 0→1 over kAntiClickSamples at the start of each fire
         // and 1→0 at the end, avoiding discontinuities at slice edges.
-        static constexpr int kAntiClickSamples = 32;   // ~0.7ms @ 44.1k
+        static constexpr int kAntiClickSamples = 512;   // ~12ms @ 44.1k
         float  fadeGain           = 0.0f;
         bool   fadingIn           = true;
+
+        // v0.43 — judder crossfade. On retrigger, we save the old
+        // readPos and crossfade from old→new over kJudderXfadeSamples
+        // so pads don't click at grain boundaries. Longer than the
+        // voice start/end fade because low-frequency content needs
+        // more time to blend without audible artefacts.
+        static constexpr int kJudderXfadeSamples = 512; // ~12ms @ 44.1k
+        int    judderXfadeRemaining = 0;
+        double judderOldReadPos     = 0.0;
+        double judderOldRate        = 1.0;
+        float  judderOldGain        = 1.0f;  // currentGain before decay step
 
     };
 
@@ -1578,7 +1614,7 @@ private:
     int   wrappedBufferIndex (double pos) const noexcept;
     float readBufferInterp (int channel, double pos) const noexcept;             // legacy: uses global interpMode
     float readBufferInterp (int channel, double pos, int interp) const noexcept; // v0.41: per-voice
-    void fireVoice (const ShapingParams& params, double samplesPerQuarter, int sourceSceneIdx = -1);
+    void fireVoice (const ShapingParams& params, double samplesPerQuarter, int sourceSceneIdx = -1, double durationOverrideQ = 0.0, double slicePosOverride = -1.0);
     void applyCrunch (float& l, float& r, float bitAmount, float rateAmount, CrushState& cs);              // legacy: globals
     void applyCrunch (float& l, float& r, float bitAmount, float rateAmount, CrushState& cs,
                       bool useAA, bool useMu);                                                              // v0.41

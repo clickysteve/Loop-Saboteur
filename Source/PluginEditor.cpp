@@ -48,6 +48,7 @@ namespace
         /*mutable*/ auto stepAccentStripe = juce::Colour::fromRGB (255, 90,  60);
         /*mutable*/ auto stepStamp        = juce::Colour::fromRGB (255, 90,  60);  // stamped = orange
         /*mutable*/ auto stepStampAccent  = juce::Colour::fromRGB (255, 90,  60);  // same
+        const auto modCyan     = juce::Colour::fromRGB (0,   204, 255);  // LFO mod indicator
         const auto playing     = juce::Colour::fromRGB (238, 238, 238);  // playhead = white
 
         // Original values for easter egg colour swap.
@@ -514,7 +515,7 @@ LoopSaboteurEditor::LoopSaboteurEditor (LoopSaboteurProcessor& p)
     // v0.25 — 8 category-grouped knob panel + act bank + waveform strip +
     // sequencer + title/footer. Height is tuned so there is zero slack
     // below the step row — the footer sits right against the sequencer.
-    //   46 (title) + 558 (knobs) + 60 (acts) + 28 (wave) + 132 (seq) + 28 (foot) = 852
+    //   46 (title) + 558 (knobs) + 24 (global mix) + 60 (acts) + 28 (wave) + 132 (seq) + 28 (foot) = 876
     // v0.8 — setSize is a "design resolution"; applyUiScale below
     // multiplies it and installs an AffineTransform so the editor
     // draws at 1:1 while the outer window picks the requested size.
@@ -543,14 +544,14 @@ LoopSaboteurEditor::LoopSaboteurEditor (LoopSaboteurProcessor& p)
     {
         const double now = juce::Time::getMillisecondCounterHiRes();
 
-        // Easter egg: triple-click on the title text → mirror UI for 3 s.
+        // Easter egg: double-click on the title text → mirror UI for 3 s.
         auto titleHitArea = juce::Rectangle<int> (20, 0, 300, 46);
         if (titleHitArea.contains (e.getPosition()))
         {
             if (now - lastTitleClickMs > 500.0) titleClickCount = 0;
             lastTitleClickMs = now;
             ++titleClickCount;
-            if (titleClickCount >= 3)
+            if (titleClickCount >= 2)
             {
                 titleClickCount = 0;
                 mirrorActive = true;
@@ -559,7 +560,7 @@ LoopSaboteurEditor::LoopSaboteurEditor (LoopSaboteurProcessor& p)
             }
         }
 
-        // Easter egg: triple-click on "COLOUR" label → swap orange/yellow.
+        // Easter egg: double-click on "COLOUR" label → swap orange/yellow.
         if (categoryPanels[2].bounds.isEmpty() == false)
         {
             auto colourHit = juce::Rectangle<int> (
@@ -571,7 +572,7 @@ LoopSaboteurEditor::LoopSaboteurEditor (LoopSaboteurProcessor& p)
                 if (now - lastColourClickMs > 500.0) colourClickCount = 0;
                 lastColourClickMs = now;
                 ++colourClickCount;
-                if (colourClickCount >= 3)
+                if (colourClickCount >= 2)
                 {
                     colourClickCount = 0;
                     colourSwapped = ! colourSwapped;
@@ -608,7 +609,7 @@ LoopSaboteurEditor::LoopSaboteurEditor (LoopSaboteurProcessor& p)
         }
 
     };
-    setSize (960, 852);
+    setSize (960, 876);
     setWantsKeyboardFocus (true);  // v0.30 — Cmd+Z undo
 
     // v0.13 — lookahead is gone from the UI. Clear any legacy non-zero
@@ -644,12 +645,21 @@ LoopSaboteurEditor::LoopSaboteurEditor (LoopSaboteurProcessor& p)
     crunch.slider.updateText();
 
     configureKnob (crushRate, "RATE",       LoopSaboteurProcessor::kParamCrushRate);
-    crushRate.slider.displayOverride = [] (double v)
+    crushRate.slider.displayOverride = [this] (double v)
     {
         if (v < 0.001) return juce::String ("OFF");
-        const double t = v * v;
-        const int hold = 1 + (int) (t * 47.0);
-        return juce::String ("/") + juce::String (hold);
+        const double sr = processorRef.getSampleRate();
+        if (sr > 0.0)
+        {
+            const int maxHold = juce::jmax (2, (int) (sr / 2000.0));
+            const double t = v * v;
+            const int hold = 1 + (int) (t * (double) (maxHold - 1));
+            const double effective = sr / (double) hold;
+            if (effective >= 1000.0)
+                return juce::String (effective / 1000.0, 1) + "k";
+            return juce::String ((int) effective) + "Hz";
+        }
+        return juce::String ("---");
     };
     crushRate.slider.updateText();
     configureKnob (mix,       "MIX",        LoopSaboteurProcessor::kParamMix);
@@ -794,6 +804,38 @@ LoopSaboteurEditor::LoopSaboteurEditor (LoopSaboteurProcessor& p)
 
     swingAttachment = std::make_unique<SliderAttachment> (
         processorRef.apvts, LoopSaboteurProcessor::kParamSwing, swingSlider);
+
+    // --- Global MIX slider -------------------------------------------
+    // Horizontal slider above the Acts strip. 0–100%, default 100%.
+    globalMixSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    globalMixSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 44, 18);
+    globalMixSlider.setRange (0.0, 1.0, 0.001);
+    globalMixSlider.setColour (juce::Slider::trackColourId,           Col::accent);
+    globalMixSlider.setColour (juce::Slider::backgroundColourId,      Col::panelDeep);
+    globalMixSlider.setColour (juce::Slider::thumbColourId,           Col::textBright);
+    globalMixSlider.setColour (juce::Slider::textBoxTextColourId,     Col::textBright);
+    globalMixSlider.setColour (juce::Slider::textBoxBackgroundColourId, Col::panelDeep);
+    globalMixSlider.setColour (juce::Slider::textBoxOutlineColourId,  juce::Colours::transparentBlack);
+    globalMixSlider.textFromValueFunction = [] (double v)
+    {
+        return juce::String ((int) std::round (v * 100.0)) + "%";
+    };
+    globalMixSlider.valueFromTextFunction = [] (const juce::String& s)
+    {
+        return juce::jlimit (0.0, 1.0,
+                             s.retainCharacters ("0123456789.").getDoubleValue() / 100.0);
+    };
+    globalMixSlider.updateText();
+    innerContent.addAndMakeVisible (globalMixSlider);
+
+    globalMixLabel.setText ("GLOBAL MIX", juce::dontSendNotification);
+    globalMixLabel.setJustificationType (juce::Justification::centredRight);
+    globalMixLabel.setColour (juce::Label::textColourId, Col::textDim);
+    globalMixLabel.setFont (juce::Font (juce::FontOptions (11.0f, juce::Font::bold)));
+    innerContent.addAndMakeVisible (globalMixLabel);
+
+    globalMixAttachment = std::make_unique<SliderAttachment> (
+        processorRef.apvts, LoopSaboteurProcessor::kParamGlobalMix, globalMixSlider);
 
     // --- FINE mode ----------------------------------------------------
     // v0.11 — the FINE button is gone from the title strip. Fine mode
@@ -944,14 +986,14 @@ LoopSaboteurEditor::LoopSaboteurEditor (LoopSaboteurProcessor& p)
     // MOD). Alt+click still drops into the hidden debug menu, which is
     // handled inside toggleSettingsPage(). The button itself behaves like
     // a clicking-toggle: lights up accent-orange when the page is open.
-    settingsButton.setButtonText ("SETTINGS");
+    settingsButton.setButtonText ("TOOLS");
     settingsButton.setClickingTogglesState (true);
     settingsButton.setColour (juce::TextButton::buttonColourId,   juce::Colour (0x00000000));
     settingsButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0x22ff5a3c));
     settingsButton.setColour (juce::TextButton::textColourOffId,  juce::Colour (0xff999999));
     settingsButton.setColour (juce::TextButton::textColourOnId,   Col::accent);
     settingsButton.getProperties().set ("hoverAccent", (int) Col::accent.getARGB());
-    settingsButton.setTooltip ("Open the settings page (alt-click for debug menu).");
+    settingsButton.setTooltip ("Open the tools page (alt-click for debug menu).");
     settingsButton.onClick = [this] { toggleSettingsPage(); };
     innerContent.addAndMakeVisible (settingsButton);
 
@@ -1393,7 +1435,7 @@ static juce::String describeKnob (const juce::String& paramId)
     if (paramId == P::kParamRate)      return "RATE\nPlayback speed for the grabbed slice.\nLower = longer/lower, higher = shorter/higher.";
     if (paramId == P::kParamJudder)    return "JUDDER\nStuttered re-triggers inside one slice.\nSets the number of hits.";
     if (paramId == P::kParamJudderDiv) return "JUDDER DIV\nDivision the judder hits subdivide at.\nInteracts with JUDDER count.";
-    if (paramId == P::kParamPitch)     return "PITCH\nSemitone shift applied to the slice.\nFINE mode (in Settings) allows cents.";
+    if (paramId == P::kParamPitch)     return "PITCH\nSemitone shift applied to the slice.\nFINE mode (in Tools) allows cents.";
     if (paramId == P::kParamSlide)     return "SLIDE\nPitch bend across the slice in semitones,\nfrom start to end.";
     if (paramId == P::kParamDecay)     return "DECAY\nLevel of each retrigger as a percentage\nof the last one. 100% = no decay.";
     if (paramId == P::kParamReverse)   return "REVERSE\nProbability that the grabbed slice plays\nbackwards.";
@@ -1748,7 +1790,8 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
 
     // v0.28 — Acts section: dark bg + stencil header.
     const int knobsBottom = 46 + 558;
-    const int sceneTop    = knobsBottom;
+    const int globalMixH  = 24;       // global MIX slider row
+    const int sceneTop    = knobsBottom + globalMixH;
     const int sceneHeight = 60;
     auto sceneArea = juce::Rectangle<int> (0, sceneTop, innerContent.getWidth(), sceneHeight);
     g.setColour (juce::Colour (0xff111111));
@@ -2207,8 +2250,8 @@ void LoopSaboteurEditor::layoutContent()
 
     // --- title strip --------------------------------------------------
     // Order from the right edge:
-    //   ?  SETTINGS  MOD  FREEZE  SEQ ON  BYPASS
-    // (left-to-right reads: BYPASS / SEQ ON / FREEZE / MOD / SETTINGS / ?)
+    //   ?  TOOLS  MOD  FREEZE  SEQ ON  BYPASS
+    // (left-to-right reads: BYPASS / SEQ ON / FREEZE / MOD / TOOLS / ?)
     auto titleArea = bounds.removeFromTop (46);
     helpButton      .setBounds (titleArea.removeFromRight (40).reduced (6, 7));
     settingsButton  .setBounds (titleArea.removeFromRight (90).reduced (6, 7));
@@ -2471,6 +2514,14 @@ void LoopSaboteurEditor::layoutContent()
         categoryPanels[6] = { {}, juce::Colour(), {}, {} };
         categoryPanels[7] = { {}, juce::Colour(), {}, {} };
     }
+
+        // --- global mix slider --------------------------------------------
+        {
+            auto gmArea = bounds.removeFromTop (24);
+            auto labelArea = gmArea.removeFromLeft (90);
+            globalMixLabel.setBounds (labelArea.reduced (4, 2));
+            globalMixSlider.setBounds (gmArea.reduced (8, 2));
+        }
 
         // --- act bank -----------------------------------------------------
         auto sceneArea = bounds.removeFromTop (60);
@@ -3148,7 +3199,33 @@ void LoopSaboteurEditor::enterLockEditMode (int stepIdx)
         };
     }
 
+    // v0.42.6 — global mix slider: same p-lock wiring as the rotary knobs.
+    {
+        globalMixAttachment.reset();
+        const int gmSlot = LoopSaboteurProcessor::lockableIndexForId (
+            LoopSaboteurProcessor::kParamGlobalMix);
+        float v = processorRef.getStepLock (stepIdx, gmSlot);
+        globalMixLockDirty = ! std::isnan (v);
+        if (std::isnan (v))
+            v = processorRef.apvts.getRawParameterValue (
+                    LoopSaboteurProcessor::kParamGlobalMix)->load();
+        globalMixSlider.setValue (v, juce::dontSendNotification);
+        globalMixSlider.onValueChange = [this, gmSlot]
+        {
+            if (editLockStep < 0) return;
+            processorRef.setStepLock (editLockStep, gmSlot,
+                                      (float) globalMixSlider.getValue());
+            if (editLockStep >= 0 && editLockStep < LoopSaboteurProcessor::kMaxSteps)
+                stepCells[editLockStep].setHasLocks (
+                    processorRef.stepHasAnyLock (editLockStep));
+            globalMixLockDirty = true;
+            refreshGlobalMixHighlight();
+            repaint();
+        };
+    }
+
     refreshKnobLockDirty();
+    refreshGlobalMixHighlight();
     refreshStepCells();
     repaint();
 }
@@ -3171,7 +3248,14 @@ void LoopSaboteurEditor::exitLockEditMode()
         kb.k->lockDirty = false;
     }
 
+    // v0.42.6 — restore global mix slider attachment.
+    globalMixSlider.onValueChange = nullptr;
+    globalMixAttachment = std::make_unique<SliderAttachment> (
+        processorRef.apvts, LoopSaboteurProcessor::kParamGlobalMix, globalMixSlider);
+    globalMixLockDirty = false;
+
     refreshKnobLockDirty();
+    refreshGlobalMixHighlight();
     refreshStepCells();
     repaint();
 }
@@ -3402,6 +3486,34 @@ void LoopSaboteurEditor::refreshLfoTargetMarkers()
             kb.k->slider.repaint();
         }
     }
+
+    // v0.42.6 — global mix slider: cyan track when LFO-targeted.
+    refreshGlobalMixHighlight();
+}
+
+void LoopSaboteurEditor::refreshGlobalMixHighlight()
+{
+    // Determine the track colour for the global mix horizontal slider.
+    // Priority: yellow (p-lock dirty) > cyan (LFO targeted) > accent (default).
+    const int act = processorRef.getSelectedScene();
+    const int gmSlot = LoopSaboteurProcessor::lockableIndexForId (
+        LoopSaboteurProcessor::kParamGlobalMix);
+
+    const bool lfoTargeted = (gmSlot >= 0)
+        && processorRef.anyLfoTargetsSlot (act, gmSlot);
+    const bool plockDirty  = globalMixLockDirty;
+
+    auto trackCol = plockDirty  ? Col::lockDirty   // yellow
+                  : lfoTargeted ? Col::modCyan      // cyan
+                  :               Col::accent;      // default orange
+
+    globalMixSlider.setColour (juce::Slider::trackColourId, trackCol);
+    globalMixLabel.setColour (juce::Label::textColourId,
+                              plockDirty  ? Col::lockDirty
+                            : lfoTargeted ? Col::modCyan
+                            :               Col::textDim);
+    globalMixSlider.repaint();
+    globalMixLabel.repaint();
 }
 
 void LoopSaboteurEditor::refreshKnobLockDirty()
@@ -4535,7 +4647,7 @@ void LoopSaboteurEditor::showHelpCallout()
         + "  RANDOM     pattern generators + grab offsets\n"
         + "  ACTS ACTS  bulk Act menu + presets + MOD-clear toggle\n"
         + "  MOD        modulation page (cyan when open)\n"
-        + "  gear icon  SETTINGS page (alt-click = debug menu)\n"
+        + "  TOOLS      creative tools page (alt-click = debug menu)\n"
         + "  SYNC|FREE  segmented: DAW tempo vs free-run\n"
         + "  HELP       this panel\n"
         + "\n"
@@ -4547,7 +4659,7 @@ void LoopSaboteurEditor::showHelpCallout()
         + "  Clearing an Act also wipes its MODs by default;\n"
         + "  flip \"Preserve MODs\" in ACTS ACTS to keep them.\n"
         + "\n"
-        + "SETTINGS PAGE (gear icon)\n"
+        + "TOOLS PAGE\n"
         + "  Full-screen overlay. Left column = ENGINE for the\n"
         + "  currently-selected Act: Output Stage, Output Mix,\n"
         + "  Interpolation, Crunch flags. Every Act has its own\n"
@@ -5774,7 +5886,7 @@ void LoopSaboteurEditor::ModPage::resized()
             auto rateRow  = panelBounds.removeFromTop (16);
             rateLabels[lfo].setBounds (rateRow);
             auto rateCtl  = panelBounds.removeFromTop (20).reduced (0, 2);
-            const int syncW = 54;
+            const int syncW = 48;
             rateBoxes[lfo].setBounds (rateCtl.withTrimmedRight (syncW + 4));
             syncButtons[lfo].setBounds (rateCtl.removeFromRight (syncW));
 

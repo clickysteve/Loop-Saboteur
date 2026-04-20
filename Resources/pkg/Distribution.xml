@@ -6,7 +6,7 @@
     <!-- System-wide install; requires admin password (standard for audio plugins). -->
     <domains enable_localSystem="true" enable_anywhere="false" enable_currentUserHome="false"/>
 
-    <!-- Single-screen install. No customisation; users get AU + VST3 + Standalone together. -->
+    <!-- Single-screen install. No customisation; users get AU + VST3 together. -->
     <options customize="never" require-scripts="false" rootVolumeOnly="true" hostArchitectures="arm64,x86_64"/>
 
     <!-- Minimum OS matches CMAKE_OSX_DEPLOYMENT_TARGET. -->
@@ -18,12 +18,11 @@
 
     <welcome file="welcome.txt" mime-type="text/plain"/>
 
-    <!-- Three component packages, stitched together by productbuild.
+    <!-- Two component packages, stitched together by productbuild.
          The file names here must match what release.sh builds via pkgbuild. -->
     <choices-outline>
         <line choice="loopsaboteur.au"/>
         <line choice="loopsaboteur.vst3"/>
-        <line choice="loopsaboteur.app"/>
     </choices-outline>
 
     <choice id="loopsaboteur.au"
@@ -40,14 +39,6 @@
         <pkg-ref id="com.amfas.loopsaboteur.vst3"/>
     </choice>
 
-    <choice id="loopsaboteur.app"
-            title="Standalone Application"
-            description="Standalone version of Loop Saboteur — runs without a DAW. Useful for quick demos and testing. Installs to /Applications."
-            start_selected="true">
-        <pkg-ref id="com.amfas.loopsaboteur.app"/>
-    </choice>
-
     <pkg-ref id="com.amfas.loopsaboteur.au">LoopSaboteur_AU.pkg</pkg-ref>
     <pkg-ref id="com.amfas.loopsaboteur.vst3">LoopSaboteur_VST3.pkg</pkg-ref>
-    <pkg-ref id="com.amfas.loopsaboteur.app">LoopSaboteur_App.pkg</pkg-ref>
 </installer-gui-script>
