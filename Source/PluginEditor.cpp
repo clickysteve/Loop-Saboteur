@@ -2756,8 +2756,11 @@ void LoopSaboteurEditor::pageChanged()
     // Re-layout the step cells with the new page. Cheap — only the
     // step strip bounds actually change.
     resized();
-    // Cached playhead index is only valid for the previous page — let
-    // the next timer tick refresh it for the new page.
+    // v0.9.0 — clear the playing flag on ALL cells so a stale white
+    // highlight doesn't persist when switching back to a page whose
+    // old playing cell was never cleared.
+    for (int i = 0; i < LoopSaboteurProcessor::kMaxSteps; ++i)
+        stepCells[i].setPlaying (false);
     lastPlayingStep = -1;
     refreshStepCells();
     repaint();
@@ -6701,7 +6704,7 @@ void LoopSaboteurEditor::ModPage::resized()
             // AHD row would normally go.
             if (isFollow)
             {
-                const int labelW = 28;
+                const int labelW = 80;
                 auto gainRow = panelBounds.removeFromTop (envRowH).reduced (0, 2);
                 envFollowGainLabels[lfo].setBounds (gainRow.removeFromLeft (labelW));
                 envFollowGainSliders[lfo].setBounds (gainRow);

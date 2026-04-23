@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(LoopSaboteur VERSION 0.9.0 LANGUAGES C CXX)
+project(LoopSaboteur VERSION 0.9.1 LANGUAGES C CXX)
 # NB: C is required alongside CXX because juce_graphics pulls in SheenBidi,
 # which is a C library. Without `C` here, CMake never generates a C compile
 # rule and the linker chokes on the missing juce_graphics_Sheenbidi.c.o.
