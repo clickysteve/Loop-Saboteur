@@ -4515,15 +4515,10 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     // v0.30 — cache the global-FX toggles once per block. These are
     // UI-driven bools (not automatable) so per-block is fine.
-    // v0.41 — crushAll is per-Act now: read from the currently-selected
-    // Act, fall back to the legacy global if there's no Act focus.
-    bool gfxCrush;
-    {
-        const int sIdx = selectedScene.load();
-        gfxCrush = (sIdx >= 0 && sIdx < kNumScenes)
-                 ? scenes[sIdx].crushAll.load()
-                 : crushAllAudio.load();
-    }
+    // v0.9.1 — crushAll is per-Act. Resolved alongside the other
+    // FX-on-dry flags: seq off → selected scene, seq on → active step.
+    bool gfxCrush = false;
+
     // v0.9.1 — FX-on-Dry flags are per-Act. When the sequencer is on,
     // resolve them from the Act on the currently-playing step so they
     // follow the sequence rather than persisting from the selected tab.
@@ -4539,6 +4534,7 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         gfxSceneIdx = sIdx;
         if (sIdx >= 0 && sIdx < kNumScenes)
         {
+            gfxCrush        = scenes[sIdx].crushAll      .load();
             gfxDrive        = scenes[sIdx].fxOnDryDrive  .load();
             gfxTone         = scenes[sIdx].fxOnDryTone   .load();
             gfxRingMod      = scenes[sIdx].fxOnDryRingMod.load();
@@ -4547,6 +4543,7 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         }
         else
         {
+            gfxCrush        = crushAllAudio .load();
             gfxDrive        = globalDrive    .load();
             gfxTone         = globalTone     .load();
             gfxRingMod      = globalRingMod  .load();
@@ -4663,7 +4660,7 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 }
                 else
                 {
-                    gfxDrive = gfxTone = gfxRingMod = gfxFold = gfxRingModQuant = false;
+                    gfxCrush = gfxDrive = gfxTone = gfxRingMod = gfxFold = gfxRingModQuant = false;
                     gfxSceneIdx = -1;
                 }
                 anyGlobalFx = gfxCrush || gfxDrive || gfxTone || gfxRingMod || gfxFold;
