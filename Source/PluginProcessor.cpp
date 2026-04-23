@@ -4524,13 +4524,19 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                  ? scenes[sIdx].crushAll.load()
                  : crushAllAudio.load();
     }
-    // v0.42 — FX-on-Dry flags are now per-Act. Resolve them against the
-    // currently-selected scene so the master bus reflects the Act the
-    // user is hearing; fall back to the legacy globals when nothing is
-    // selected (e.g. right after a fresh instantiation).
-    bool gfxDrive, gfxTone, gfxRingMod, gfxFold, gfxRingModQuant;
-    {
-        const int sIdx = selectedScene.load();
+    // v0.9.1 — FX-on-Dry flags are per-Act. When the sequencer is on,
+    // resolve them from the Act on the currently-playing step so they
+    // follow the sequence rather than persisting from the selected tab.
+    // When seq is off, use the selected scene. Initialised here as a
+    // default; updated inside the sample loop when activeSceneForFire
+    // is known.
+    bool gfxDrive = false, gfxTone = false, gfxRingMod = false;
+    bool gfxFold = false,  gfxRingModQuant = false;
+    int  gfxSceneIdx = -1;  // tracks which scene the flags were last read from
+
+    auto resolveGfxFlags = [&] (int sIdx) {
+        if (sIdx == gfxSceneIdx) return;  // same scene — no change
+        gfxSceneIdx = sIdx;
         if (sIdx >= 0 && sIdx < kNumScenes)
         {
             gfxDrive        = scenes[sIdx].fxOnDryDrive  .load();
@@ -4547,8 +4553,10 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             gfxFold         = globalFold     .load();
             gfxRingModQuant = ringModQuantise.load();
         }
-    }
-    const bool anyGlobalFx = gfxCrush || gfxDrive || gfxTone || gfxRingMod || gfxFold;
+    };
+    // Initial resolve from the selected scene (seq-off default).
+    resolveGfxFlags (selectedScene.load());
+    bool anyGlobalFx = gfxCrush || gfxDrive || gfxTone || gfxRingMod || gfxFold;
 
     // --- sample loop ----------------------------------------------------
     for (int i = 0; i < numSamples; ++i)
@@ -4644,6 +4652,16 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 wrappedStep = juce::jlimit (0, seqLen - 1, mapped);
                 activeSceneForFire = steps[wrappedStep].load();
                 currentPlayingStep.store (wrappedStep);
+
+                // v0.9.1 — resolve FX-on-dry from the active step's Act
+                // so the dry-path effects follow the sequence.
+                {
+                    const int fxScene = (activeSceneForFire >= 0)
+                                         ? activeSceneForFire
+                                         : selectedScene.load();
+                    resolveGfxFlags (fxScene);
+                    anyGlobalFx = gfxCrush || gfxDrive || gfxTone || gfxRingMod || gfxFold;
+                }
 
                 // v0.14 — muted-step cut on step entry. Kill the voice
                 // the moment we land on a new muted step, regardless of
@@ -4933,9 +4951,12 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                     break;
                                 case kLfoSandH:
                                 {
-                                    // Detect cycle wrap and latch a new value.
-                                    if (ph < 0.02 && lfo.lastOutput != 0.0f)
+                                    // v0.9.1 — detect cycle wrap by comparing
+                                    // current phase to previous. Latch a fresh
+                                    // random value each time the phase resets.
+                                    if (ph < lfo.sAndHPrev)
                                         lfo.sAndHValue = rng.nextFloat() * 2.0f - 1.0f;
+                                    lfo.sAndHPrev = ph;
                                     val = lfo.sAndHValue;
                                     break;
                                 }

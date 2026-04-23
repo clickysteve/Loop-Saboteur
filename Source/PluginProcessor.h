@@ -72,7 +72,11 @@ public:
     bool acceptsMidi() const override                      { return false; }
     bool producesMidi() const override                     { return false; }
     bool isMidiEffect() const override                     { return false; }
-    double getTailLengthSeconds() const override           { return 5.0; }
+    // v0.9.1 — infinite tail so the DAW never stops calling processBlock
+    // during silence. Loop Saboteur's circular buffer, sequencer, and LFOs
+    // must keep running even when input is quiet — otherwise everything
+    // freezes after a few bars of silence.
+    double getTailLengthSeconds() const override           { return std::numeric_limits<double>::infinity(); }
 
     int getNumPrograms() override                          { return 1; }
     int getCurrentProgram() override                       { return 0; }
@@ -1229,8 +1233,9 @@ public:
         std::atomic<int>   trigMode  { kTrigActiveSteps };
 
         // Audio-thread-only running state (not atomic, only touched in processBlock).
-        double phase       = 0.0;
+        double phase        = 0.0;
         float  sAndHValue  = 0.0f;  // held value for S&H shape
+        double sAndHPrev   = 0.0;   // previous phase for wrap detection
         float  lastOutput  = 0.0f;  // current output * depth (bipolar)
 
         // v0.34 — envelope runtime. envStage: 0=idle, 1=attack, 2=hold, 3=decay.
@@ -1410,6 +1415,41 @@ public:
     static constexpr const char* kParamSmear     = "smear";
     static constexpr const char* kParamStutter   = "stutter";  // v0.22
     static constexpr const char* kParamChaos     = "chaos";
+
+    // v0.9.1 — human-readable display names for MOD target dropdown.
+    static juce::String displayNameForParam (const juce::String& id) noexcept
+    {
+        if (id == kParamDivision)  return "Division";
+        if (id == kParamLookback)  return "Lookback";
+        if (id == kParamRate)      return "Rate";
+        if (id == kParamJudder)    return "Judder";
+        if (id == kParamJudderDiv) return "Judder Div";
+        if (id == kParamPitch)     return "Pitch";
+        if (id == kParamSlide)     return "Slide";
+        if (id == kParamDecay)     return "Decay";
+        if (id == kParamReverse)   return "Reverse";
+        if (id == kParamCrunch)    return "Crunch (bits)";
+        if (id == kParamCrushRate) return "Crunch (rate)";
+        if (id == kParamMix)       return "Mix";
+        if (id == kParamDrive)     return "Drive";
+        if (id == kParamTone)      return "Tone";
+        if (id == kParamFeedback)  return "Feedback";
+        if (id == kParamTape)      return "Tape";
+        if (id == kParamRingMod)   return "Ring Mod";
+        if (id == kParamVarispeed) return "Varispeed";
+        if (id == kParamStereo)    return "Stereo";
+        if (id == kParamStretch)   return "Stretch";
+        if (id == kParamShimmer)   return "Shimmer";
+        if (id == kParamRes)       return "Resonance";
+        if (id == kParamFold)      return "Fold";
+        if (id == kParamGate)      return "Gate";
+        if (id == kParamSmear)     return "Smear";
+        if (id == kParamStutter)   return "Stutter";
+        if (id == kParamChaos)     return "Chaos";
+        if (id == kParamChance)    return "Chance";
+        if (id == kParamGlobalMix) return "Global Mix";
+        return id;  // fallback: raw ID
+    }
 
     // v0.7 — global scale quantise for PITCH. Not per-Act, not baked
     // into scenes: the same root+scale applies across the whole plugin.

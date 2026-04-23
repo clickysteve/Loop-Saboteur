@@ -7010,6 +7010,7 @@ void LoopSaboteurEditor::ModPage::setupLfoControls()
         envFollowGainSliders[lfo].setSliderStyle (juce::Slider::LinearHorizontal);
         envFollowGainSliders[lfo].setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
         envFollowGainSliders[lfo].setDoubleClickReturnValue (true, 1.0);
+        envFollowGainSliders[lfo].setColour (juce::Slider::thumbColourId,       juce::Colour (0xffeeeeee));
         envFollowGainSliders[lfo].setColour (juce::Slider::trackColourId,      juce::Colour (0xffff5a3c));
         envFollowGainSliders[lfo].setColour (juce::Slider::backgroundColourId, juce::Colour (0xff2a2a2a));
         envFollowGainSliders[lfo].setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xffffffff));
@@ -7080,10 +7081,14 @@ void LoopSaboteurEditor::ModPage::setupLfoControls()
         targetBoxes[lfo].clear();
         targetBoxes[lfo].addItem ("None", 1);
         {
+            // v0.9.1 — use human-readable display names, sorted alphabetically.
             std::vector<std::pair<juce::String, int>> sorted;
             sorted.reserve ((size_t) LoopSaboteurProcessor::kNumLockableParams);
             for (int s = 0; s < LoopSaboteurProcessor::kNumLockableParams; ++s)
-                sorted.emplace_back (LoopSaboteurProcessor::lockableIdForIndex (s), s);
+            {
+                const auto id = LoopSaboteurProcessor::lockableIdForIndex (s);
+                sorted.emplace_back (LoopSaboteurProcessor::displayNameForParam (id), s);
+            }
             std::sort (sorted.begin(), sorted.end(),
                        [] (const auto& a, const auto& b)
                        { return a.first.compareNatural (b.first) < 0; });
