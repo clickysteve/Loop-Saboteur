@@ -5188,11 +5188,24 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                             : paramsFromKnobs();
                         if (scenelessRatchet)
                         {
-                            // v0.9.1 — ratchet on a blank step: use the
-                            // knob settings for division/lookback/rate so
-                            // the ratchet chops a real slice of audio.
-                            // Always quantised so it locks to the beat.
-                            // Strip FX and pitch so it's a clean retrigger.
+                            // v0.9.1 — ratchet on a blank step = pure
+                            // rhythmic stutter. Replays "the beat that just
+                            // happened" N times within this step, clean.
+                            // Lookback matches the step duration so each
+                            // sub-hit grabs a musically meaningful slice.
+                            // Rate locked to 1×, quantised, no FX.
+                            {
+                                // Find closest lookback index to seqStepQ.
+                                int bestIdx = 3; // default 1/16
+                                double bestDist = 999.0;
+                                for (int li = 0; li < 10; ++li)
+                                {
+                                    const double d = std::abs (lookbackIndexToQuarters (li) - seqStepQ);
+                                    if (d < bestDist) { bestDist = d; bestIdx = li; }
+                                }
+                                params.lookbackIdx = bestIdx;
+                            }
+                            params.rateIdx     = 3;   // 1× playback
                             params.lookbackBehaviour = (int) loopsab::kLookbackQuantised;
                             params.judderCount = 1;
                             params.mix         = 1.0f;
