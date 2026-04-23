@@ -4554,8 +4554,10 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             gfxRingModQuant = ringModQuantise.load();
         }
     };
-    // Initial resolve from the selected scene (seq-off default).
-    resolveGfxFlags (selectedScene.load());
+    // Initial resolve: seq off → use selected scene; seq on → start
+    // with flags off until the first step boundary tells us which Act.
+    if (! seqEnabled)
+        resolveGfxFlags (selectedScene.load());
     bool anyGlobalFx = gfxCrush || gfxDrive || gfxTone || gfxRingMod || gfxFold;
 
     // --- sample loop ----------------------------------------------------
@@ -4653,15 +4655,18 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 activeSceneForFire = steps[wrappedStep].load();
                 currentPlayingStep.store (wrappedStep);
 
-                // v0.9.1 — resolve FX-on-dry from the active step's Act
-                // so the dry-path effects follow the sequence.
+                // v0.9.1 — resolve FX-on-dry from the active step's Act.
+                // Blank step (no Act) = no FX-on-dry at all.
+                if (activeSceneForFire >= 0)
                 {
-                    const int fxScene = (activeSceneForFire >= 0)
-                                         ? activeSceneForFire
-                                         : selectedScene.load();
-                    resolveGfxFlags (fxScene);
-                    anyGlobalFx = gfxCrush || gfxDrive || gfxTone || gfxRingMod || gfxFold;
+                    resolveGfxFlags (activeSceneForFire);
                 }
+                else
+                {
+                    gfxDrive = gfxTone = gfxRingMod = gfxFold = gfxRingModQuant = false;
+                    gfxSceneIdx = -1;
+                }
+                anyGlobalFx = gfxCrush || gfxDrive || gfxTone || gfxRingMod || gfxFold;
 
                 // v0.14 — muted-step cut on step entry. Kill the voice
                 // the moment we land on a new muted step, regardless of
