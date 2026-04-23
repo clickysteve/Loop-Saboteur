@@ -8,5 +8,4 @@ This installer will place two plugin formats on your Mac:
 After install, restart your DAW and rescan plugins. Loop Saboteur will
 appear under AMFAS in the plugin browser.
 
-This is a private testing build. Please send feedback, bugs, and weird
-noises back to Steve. Breakage is expected — that is the whole point.
+For support, updates, and more: https://allmyfriendsaresynths.com

@@ -1650,8 +1650,7 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
         g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
         g.setColour (Col::accent);
         const juce::String verStr = juce::String ("v")
-                                    + juce::String (JucePlugin_VersionString)
-                                    + " Beta";
+                                    + juce::String (JucePlugin_VersionString);
         g.drawFittedText (verStr, verArea, juce::Justification::bottomLeft, 1);
         const int verW = (int) g.getCurrentFont().getStringWidthFloat (verStr) + 8;
         auto amfasArea = verArea.withTrimmedLeft (verW);

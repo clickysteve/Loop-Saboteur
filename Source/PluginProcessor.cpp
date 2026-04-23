@@ -3502,6 +3502,7 @@ void LoopSaboteurProcessor::prepareToPlay (double sr, int /*samplesPerBlock*/)
         {
             lfos[si][li].phase = 0.0;
             lfos[si][li].sAndHValue = 0.0f;
+            lfos[si][li].sAndHPrev = 0.0;           // v0.9.1 — S&H wrap detection
             lfos[si][li].lastOutput = 0.0f;
             // v0.34 — envelope runtime reset.
             lfos[si][li].envStage = 0;

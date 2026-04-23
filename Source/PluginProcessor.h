@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <limits>
 #include "OutputStage.h"
 
 // ============================================================================
@@ -1442,7 +1443,7 @@ public:
         if (id == kParamShimmer)   return "Shimmer";
         if (id == kParamRes)       return "Resonance";
         if (id == kParamFold)      return "Fold";
-        if (id == kParamGate)      return "Gate";
+        if (id == kParamGate)      return "Shape";
         if (id == kParamSmear)     return "Smear";
         if (id == kParamStutter)   return "Stutter";
         if (id == kParamChaos)     return "Chaos";
