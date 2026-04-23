@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(LoopSaboteur VERSION 0.5.0 LANGUAGES C CXX)
+project(LoopSaboteur VERSION 0.9.0 LANGUAGES C CXX)
 # NB: C is required alongside CXX because juce_graphics pulls in SheenBidi,
 # which is a C library. Without `C` here, CMake never generates a C compile
 # rule and the linker chokes on the missing juce_graphics_Sheenbidi.c.o.
@@ -108,4 +108,30 @@ if(APPLE AND LOOPSAB_CODESIGN_IDENTITY)
     message(STATUS "LoopSaboteur: Developer ID signing ENABLED (${LOOPSAB_CODESIGN_IDENTITY})")
 else()
     message(STATUS "LoopSaboteur: Developer ID signing DISABLED (unsigned local build)")
+endif()
+
+# ---------- Auto-deploy to system plugin folders (macOS) ----------
+if(APPLE)
+    set(AU_DEST  "$ENV{HOME}/Library/Audio/Plug-Ins/Components")
+    set(VST3_DEST "$ENV{HOME}/Library/Audio/Plug-Ins/VST3")
+
+    if(TARGET LoopSaboteur_AU)
+        add_custom_command(TARGET LoopSaboteur_AU POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${AU_DEST}"
+            COMMAND ${CMAKE_COMMAND} -E rm -rf "${AU_DEST}/Loop Saboteur.component"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "$<TARGET_BUNDLE_DIR:LoopSaboteur_AU>"
+                "${AU_DEST}/Loop Saboteur.component"
+            COMMENT "Installing AU to ${AU_DEST}")
+    endif()
+
+    if(TARGET LoopSaboteur_VST3)
+        add_custom_command(TARGET LoopSaboteur_VST3 POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${VST3_DEST}"
+            COMMAND ${CMAKE_COMMAND} -E rm -rf "${VST3_DEST}/Loop Saboteur.vst3"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "$<TARGET_BUNDLE_DIR:LoopSaboteur_VST3>"
+                "${VST3_DEST}/Loop Saboteur.vst3"
+            COMMENT "Installing VST3 to ${VST3_DEST}")
+    endif()
 endif()

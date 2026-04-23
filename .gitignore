@@ -65,3 +65,4 @@ _local/
 .pkg_build_number
 build_release/
 JUCE
+Presets/

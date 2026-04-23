@@ -938,6 +938,9 @@ private:
     public:
         void setProcessor (LoopSaboteurProcessor* p) { proc = p; }
         void paint (juce::Graphics&) override;
+        void mouseDown (const juce::MouseEvent&) override;
+        // v0.5.0 — toggle between Input and Slice view on click.
+        bool showSliceView = false;
     private:
         LoopSaboteurProcessor* proc = nullptr;
     };
@@ -1008,6 +1011,9 @@ private:
         std::array<juce::Label,  4> holdLabels;
         std::array<juce::Slider, 4> decaySliders;
         std::array<juce::Label,  4> decayLabels;
+        // v0.50 — envelope follower sensitivity slider (only visible when shape == Env Follow).
+        std::array<juce::Slider, 4> envFollowGainSliders;
+        std::array<juce::Label,  4> envFollowGainLabels;
         std::array<juce::ComboBox, 4> trigBoxes;
         // v0.42.2 — explicit "Retrigger Mode:" label above trigBoxes so
         // users don't have to guess what "Slice / Active Steps / All
@@ -1147,6 +1153,7 @@ private:
     // BUG 1 fix: removed lastAppliedPresetIdx; now read directly from processorRef via getScenePresetIdx()
     std::unique_ptr<juce::FileChooser> activeChooser;
     void showActIoMenu();
+    void showPresetLoadMenu();  // v0.5.0 — preset browser (categories) from label click
     void applyPresetDelta (int delta);  // -1 = prev, +1 = next
     void updatePresetNameLabel();  // updates label text based on processorRef.getScenePresetIdx()
     void exportCurrentAct();
@@ -1499,6 +1506,180 @@ private:
     void pushRecentKey (char ch);
     bool recentKeysSpell (const char* word, juce::int64 withinMs) const;
     void spawnRatRun();
+
+    // v0.7.0 — styled preset save dialog with category picker.
+    class SavePresetOverlay : public juce::Component
+    {
+    public:
+        std::function<void (const juce::String& name, const juce::String& category)> onSave;
+        std::function<void()> onCancel;
+
+        SavePresetOverlay()
+        {
+            nameEditor.setColour (juce::TextEditor::backgroundColourId,   juce::Colour (0xff2a2a2e));
+            nameEditor.setColour (juce::TextEditor::textColourId,         juce::Colour (0xffeeeeee));
+            nameEditor.setColour (juce::TextEditor::outlineColourId,      juce::Colour (0xff555555));
+            nameEditor.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colour (0xffff5a3c));
+            nameEditor.setFont (juce::FontOptions (14.0f));
+            addAndMakeVisible (nameEditor);
+
+            catCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff2a2a2e));
+            catCombo.setColour (juce::ComboBox::textColourId,       juce::Colour (0xffeeeeee));
+            catCombo.setColour (juce::ComboBox::outlineColourId,    juce::Colour (0xff555555));
+            addAndMakeVisible (catCombo);
+
+            newCatEditor.setColour (juce::TextEditor::backgroundColourId,   juce::Colour (0xff2a2a2e));
+            newCatEditor.setColour (juce::TextEditor::textColourId,         juce::Colour (0xffeeeeee));
+            newCatEditor.setColour (juce::TextEditor::outlineColourId,      juce::Colour (0xff555555));
+            newCatEditor.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colour (0xffff5a3c));
+            newCatEditor.setFont (juce::FontOptions (14.0f));
+            newCatEditor.setVisible (false);
+            addAndMakeVisible (newCatEditor);
+
+            saveBtn.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xffff5a3c));
+            saveBtn.setColour (juce::TextButton::textColourOnId,   juce::Colour (0xff111111));
+            saveBtn.setColour (juce::TextButton::textColourOffId,  juce::Colour (0xff111111));
+            saveBtn.onClick = [this] { doSave(); };
+            addAndMakeVisible (saveBtn);
+
+            cancelBtn.setColour (juce::TextButton::buttonColourId,   juce::Colour (0xff2a2a2e));
+            cancelBtn.setColour (juce::TextButton::textColourOnId,   juce::Colour (0xffaaaaaa));
+            cancelBtn.setColour (juce::TextButton::textColourOffId,  juce::Colour (0xffaaaaaa));
+            cancelBtn.onClick = [this] { if (onCancel) onCancel(); };
+            addAndMakeVisible (cancelBtn);
+
+            catCombo.onChange = [this]
+            {
+                const bool isNew = (catCombo.getSelectedId() == kNewCategoryId);
+                newCatEditor.setVisible (isNew);
+                if (isNew) newCatEditor.grabKeyboardFocus();
+                resized();
+            };
+        }
+
+        void configure (const juce::String& defaultName,
+                        const juce::StringArray& existingCategories)
+        {
+            nameEditor.setText (defaultName, false);
+            catCombo.clear (juce::dontSendNotification);
+            catCombo.addItem ("(none)", kNoCategoryId);
+            for (int i = 0; i < existingCategories.size(); ++i)
+                catCombo.addItem (existingCategories[i], kCategoryBaseId + i);
+            catCombo.addSeparator();
+            catCombo.addItem ("New category...", kNewCategoryId);
+            catCombo.setSelectedId (kNoCategoryId, juce::dontSendNotification);
+            newCatEditor.clear();
+            newCatEditor.setVisible (false);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            // Dim overlay behind the dialog.
+            g.fillAll (juce::Colour (0xcc000000));
+
+            // Dialog card.
+            auto card = getDialogBounds();
+            g.setColour (juce::Colour (0xff1c1c22));
+            g.fillRoundedRectangle (card.toFloat(), 8.0f);
+            g.setColour (juce::Colour (0xff555555));
+            g.drawRoundedRectangle (card.toFloat(), 8.0f, 1.0f);
+
+            // Title.
+            g.setColour (juce::Colour (0xffeeeeee));
+            g.setFont (juce::Font ("Impact", 18.0f, juce::Font::plain));
+            g.drawText ("SAVE USER PRESET", card.removeFromTop (40),
+                        juce::Justification::centred, true);
+
+            // Labels.
+            const int pad = 16;
+            auto inner = getDialogBounds().reduced (pad);
+            inner.removeFromTop (40);  // skip title
+
+            g.setFont (juce::Font ("Impact", 13.0f, juce::Font::plain));
+            g.setColour (juce::Colour (0xffaaaaaa));
+            g.drawText ("NAME", inner.removeFromTop (18),
+                        juce::Justification::centredLeft, true);
+            inner.removeFromTop (28);  // skip editor
+            inner.removeFromTop (8);   // gap
+            g.drawText ("CATEGORY", inner.removeFromTop (18),
+                        juce::Justification::centredLeft, true);
+        }
+
+        void resized() override
+        {
+            const int pad = 16;
+            auto inner = getDialogBounds().reduced (pad);
+            inner.removeFromTop (40);  // title
+
+            inner.removeFromTop (18);  // "NAME" label
+            nameEditor.setBounds (inner.removeFromTop (28));
+            inner.removeFromTop (8);
+
+            inner.removeFromTop (18);  // "CATEGORY" label
+            catCombo.setBounds (inner.removeFromTop (28));
+
+            if (newCatEditor.isVisible())
+            {
+                inner.removeFromTop (6);
+                newCatEditor.setBounds (inner.removeFromTop (28));
+            }
+
+            inner.removeFromTop (12);  // gap before buttons
+            auto btnRow = inner.removeFromTop (32);
+            const int btnW = 100;
+            const int gap = 12;
+            const int totalW = btnW * 2 + gap;
+            btnRow = btnRow.withSizeKeepingCentre (totalW, 32);
+            cancelBtn.setBounds (btnRow.removeFromLeft (btnW));
+            btnRow.removeFromLeft (gap);
+            saveBtn.setBounds (btnRow.removeFromLeft (btnW));
+        }
+
+        bool keyPressed (const juce::KeyPress& key) override
+        {
+            if (key == juce::KeyPress::returnKey)  { doSave(); return true; }
+            if (key == juce::KeyPress::escapeKey)   { if (onCancel) onCancel(); return true; }
+            return false;
+        }
+
+        void focusGained (FocusChangeType) override { nameEditor.grabKeyboardFocus(); }
+        void visibilityChanged() override { if (isVisible()) nameEditor.grabKeyboardFocus(); }
+
+    private:
+        static constexpr int kNoCategoryId   = 1;
+        static constexpr int kNewCategoryId  = 9999;
+        static constexpr int kCategoryBaseId = 100;
+
+        juce::TextEditor  nameEditor;
+        juce::ComboBox    catCombo;
+        juce::TextEditor  newCatEditor;
+        juce::TextButton  saveBtn  { "SAVE" };
+        juce::TextButton  cancelBtn { "CANCEL" };
+
+        juce::Rectangle<int> getDialogBounds() const
+        {
+            const int w = 360;
+            const int h = newCatEditor.isVisible() ? 290 : 250;
+            return getLocalBounds().withSizeKeepingCentre (w, h);
+        }
+
+        void doSave()
+        {
+            auto name = nameEditor.getText().trim();
+            if (name.isEmpty()) return;
+
+            juce::String cat;
+            if (catCombo.getSelectedId() == kNewCategoryId)
+                cat = newCatEditor.getText().trim();
+            else if (catCombo.getSelectedId() >= kCategoryBaseId)
+                cat = catCombo.getText();
+            // kNoCategoryId → empty string (root)
+
+            if (onSave) onSave (name, cat);
+        }
+    };
+    std::unique_ptr<SavePresetOverlay> savePresetOverlay;
+    void showSavePresetDialog (const juce::String& defaultName);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LoopSaboteurEditor)
 };

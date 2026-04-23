@@ -72,7 +72,7 @@ public:
     bool acceptsMidi() const override                      { return false; }
     bool producesMidi() const override                     { return false; }
     bool isMidiEffect() const override                     { return false; }
-    double getTailLengthSeconds() const override           { return 2.0; }
+    double getTailLengthSeconds() const override           { return 5.0; }
 
     int getNumPrograms() override                          { return 1; }
     int getCurrentProgram() override                       { return 0; }
@@ -125,7 +125,7 @@ public:
         float shimmer       = 0.0f;  // aliased-residual HF sparkle bit-crush
         float res           = 0.0f;  // SVF resonance, pairs with TONE
         float fold          = 0.0f;  // sine wavefolder
-        float gate          = 0.0f;  // LPG depth (Buchla-style low-pass gate)
+        float gate          = 0.0f;  // Shape: -1=Soft(LPG), 0=bypass, +1=Snappy
         float smear         = 0.0f;  // short delay blur feedback amount
         float stutter       = 0.0f;  // v0.22 — micro-loop size (0 = off, 1 = tiny)
         float chaos         = 0.0f;  // probabilistic sample glitching
@@ -136,12 +136,18 @@ public:
         // engineValid=false means "this fire used live knobs" / fall back
         // to global/processor-level engine settings (kept for the master
         // bus only — voice bake always uses these values).
-        int   engineStage   = 0;     // OutputStage::Mode
-        float engineMix     = 0.0f;  // 0..1
+        int   engineStage      = 0;     // OutputStage::Mode
+        float engineMix        = 0.0f;  // 0..1
+        float engineIntensity  = 0.5f;  // 0..1, v0.7.x ENGINE colour intensity
         int   interpMode    = 0;     // loopsab::InterpMode
         bool  crushAA       = true;  // post-crunch anti-alias LP
         bool  crushMu       = true;  // mu-law companding
         bool  crushAll      = false; // crush master output, not just slices
+
+        // v0.5.0 — per-Act filter mode and frequency split.
+        int   filterMode    = 0;     // loopsab::FilterMode (Tilt default)
+        int   freqSplitMode = 0;     // 0=Full, 1=Low Only, 2=High Only
+        float freqSplitHz   = 500.0f;
 
         // v0.42 — per-Act stereo mode + FX-on-Dry flags + ring-mod quantise.
         // These used to be global processor atomics (`stereoMode`, `globalDrive`
@@ -155,6 +161,26 @@ public:
         bool  fxOnDryRingMod = false; // apply RING MOD to whole stream
         bool  fxOnDryFold    = false; // apply FOLD  to whole stream
         bool  ringModQuant   = false; // quantise ring mod to scale
+
+        // v0.5.0 — per-Act CHARACTER options (right-click knob modes).
+        int   driveType      = 0;     // loopsab::DriveType (Tape default)
+        int   foldTopology   = 0;     // loopsab::FoldTopology (Sine default)
+        int   shimmerOctave  = 0;     // loopsab::ShimmerOctave (+1 Oct default)
+        int   smearCharacter = 0;     // loopsab::SmearCharacter (Blur default)
+        int   stutterWindow  = 0;     // loopsab::StutterWindow (Fixed default)
+        int   varispeedCurve = 0;     // loopsab::VarispeedCurve (Linear default)
+        int   slideCurve     = 0;     // loopsab::SlideCurve (Linear default)
+        int   reverseMode    = 0;     // loopsab::ReverseMode (Random default)
+
+        // v0.5.0 wave 2 — more CHARACTER options.
+        int   tapeMode          = 0;  // loopsab::TapeMode (Classic default)
+        int   ringModWave       = 0;  // loopsab::RingModWave (Sine default)
+        int   chaosDistribution = 0;  // loopsab::ChaosDistribution (Uniform default)
+        int   feedbackCharacter = 0;  // loopsab::FeedbackCharacter (Clean default)
+        int   stretchMode       = 0;  // loopsab::StretchMode (Standard default)
+        int   judderShape       = 0;  // loopsab::JudderShape (Even default)
+        int   lookbackBehaviour = 0;  // loopsab::LookbackBehaviour (Fixed default)
+        int   decayCurve        = 0;  // loopsab::DecayCurve (Linear default)
     };
 
     // One scene = one stored ShapingParams snapshot, but held as
@@ -197,12 +223,18 @@ public:
         // v0.41 — per-Act ENGINE bundle. See ShapingParams above for
         // semantics. Defaults match the previous global defaults so an
         // un-configured Act behaves like the legacy single-engine plugin.
-        std::atomic<int>   engineStage   { 0 };       // OutputStage::Mode (Off)
-        std::atomic<float> engineMix     { 0.0f };    // dry by default
+        std::atomic<int>   engineStage      { 0 };       // OutputStage::Mode (Off)
+        std::atomic<float> engineMix        { 0.0f };    // dry by default
+        std::atomic<float> engineIntensity  { 0.5f };    // colour intensity
         std::atomic<int>   interpMode    { 0 };       // kInterpLinear
         std::atomic<bool>  crushAA       { true };
         std::atomic<bool>  crushMu       { true };
         std::atomic<bool>  crushAll      { false };
+
+        // v0.5.0 — per-Act filter mode (Tilt/LP/HP/BP) and frequency split.
+        std::atomic<int>   filterMode    { 0 };       // loopsab::kFilterTilt
+        std::atomic<int>   freqSplitMode { 0 };       // 0=Full, 1=Low Only, 2=High Only
+        std::atomic<float> freqSplitHz   { 500.0f };  // crossover frequency
 
         // v0.42 — per-Act stereo mode + FX-on-Dry flags + ring mod quantise.
         // See ShapingParams above for rationale. Defaults match the previous
@@ -213,6 +245,29 @@ public:
         std::atomic<bool>  fxOnDryRingMod { false };
         std::atomic<bool>  fxOnDryFold    { false };
         std::atomic<bool>  ringModQuant   { false };
+
+        // v0.5.0 — per-Act CHARACTER options (right-click knob modes).
+        std::atomic<int>   driveType      { 0 };      // loopsab::kDriveTape
+        std::atomic<int>   foldTopology   { 0 };      // loopsab::kFoldSine
+        std::atomic<int>   shimmerOctave  { 0 };      // loopsab::kShimmerUp1
+        std::atomic<int>   smearCharacter { 0 };      // loopsab::kSmearBlur
+        std::atomic<int>   stutterWindow  { 0 };      // loopsab::kStutterFixed
+        std::atomic<int>   varispeedCurve { 0 };      // loopsab::kVariLinear
+        std::atomic<int>   slideCurve     { 0 };      // loopsab::kSlideLinear
+        std::atomic<int>   reverseMode    { 0 };      // loopsab::kReverseRandom
+
+        // v0.5.0 wave 2 — more CHARACTER options.
+        std::atomic<int>   tapeMode          { 0 };  // loopsab::kTapeClassic
+        std::atomic<int>   ringModWave       { 0 };  // loopsab::kRingSine
+        std::atomic<int>   chaosDistribution { 0 };  // loopsab::kChaosUniform
+        std::atomic<int>   feedbackCharacter { 0 };  // loopsab::kFeedbackClean
+        std::atomic<int>   stretchMode       { 0 };  // loopsab::kStretchStandard
+        std::atomic<int>   judderShape       { 0 };  // loopsab::kJudderEven
+        std::atomic<int>   lookbackBehaviour { 0 };  // loopsab::kLookbackFixed
+        std::atomic<int>   decayCurve        { 0 };  // loopsab::kDecayLinear
+
+        // v0.7.0 — Cage 4'33" easter egg: when true, output is zeroed.
+        std::atomic<bool>  cageSilence       { false };
     };
 
     // Editor-thread API for scene + grid management. These are
@@ -264,6 +319,7 @@ public:
         int   trigMode       = 0;      // kTrigSlice
         int   crossTargetLfo = -1;     // no cross-mod
         float crossDepth     = 1.0f;
+        float envFollowGain  = 1.0f;   // 1.0..10.0 sensitivity
     };
 
     struct ActPreset
@@ -285,6 +341,38 @@ public:
         // so old aggregate-init entries continue to compile unchanged
         // and behave identically (no modulation applied).
         LfoPresetEntry lfos[4] = {};
+
+        // v0.7.0 — ENGINE settings. Defaults match SceneData so old
+        // aggregate-init entries compile unchanged and behave identically.
+        int   engineStage      = 0;
+        float engineMix        = 0.0f;
+        float engineIntensity  = 0.5f;
+        int   interpMode    = 0;
+        bool  presetCrushAA = true;    // "preset" prefix avoids shadowing
+        bool  presetCrushMu = true;
+        int   filterMode    = 0;
+        int   freqSplitMode = 0;
+        float freqSplitHz   = 500.0f;
+
+        // v0.7.0 — CHARACTER settings (right-click knob modes).
+        int   stereoMode        = 0;
+        bool  ringModQuant      = false;
+        int   driveType         = 0;
+        int   foldTopology      = 0;
+        int   shimmerOctave     = 0;
+        int   smearCharacter    = 0;
+        int   stutterWindow     = 0;
+        int   varispeedCurve    = 0;
+        int   slideCurve        = 0;
+        int   reverseMode       = 0;
+        int   tapeMode          = 0;
+        int   ringModWave       = 0;
+        int   chaosDistribution = 0;
+        int   feedbackCharacter = 0;
+        int   stretchMode       = 0;
+        int   judderShape       = 0;
+        int   lookbackBehaviour = 0;
+        int   decayCurve        = 0;
     };
     static int              getNumActPresets() noexcept;
     static const ActPreset& getActPreset (int idx) noexcept;
@@ -305,13 +393,26 @@ public:
     // applyUserPreset    — load the nth user preset into the given Act.
     // deleteUserPreset   — remove the file from disk, then rescan.
     static juce::File getUserPresetsDir();
-    bool  saveCurrentActAsUserPreset (int sceneIdx, const juce::String& displayName);
+    // v0.7.0 — optional category puts the file in a sub-folder.
+    bool  saveCurrentActAsUserPreset (int sceneIdx, const juce::String& displayName,
+                                      const juce::String& category = {});
     void  rescanUserPresets();
     int   getNumUserPresets() const noexcept;
     juce::String getUserPresetName (int idx) const;
+    juce::String getUserPresetCategory (int idx) const;
     juce::File   getUserPresetFile (int idx) const;
     bool  applyUserPreset (int sceneIdx, int userIdx);
     bool  deleteUserPreset (int userIdx);
+    juce::StringArray getUserPresetCategories() const;
+    // v0.7.0 — category management: rename moves the sub-folder,
+    // delete moves all presets in that sub-folder to the root.
+    bool  renameUserPresetCategory (const juce::String& oldName, const juce::String& newName);
+    bool  deleteUserPresetCategory (const juce::String& categoryName);
+
+    // v0.7.0 — persist UI preferences so new instances start with the
+    // user's preferred settings (tooltips, page-follow, scale, etc.).
+    void  saveGlobalDefaults();
+    void  loadGlobalDefaults();
 
     // v0.11 — randomization helpers. Drive the "RANDOMIZE" button in
     // the sequencer header.
@@ -636,8 +737,6 @@ public:
         interpMode.store (m);
         for (auto& s : scenes) s.interpMode.store (m);
     }
-    bool  getPresetRecallEngine () const noexcept { return presetRecallEngine.load(); }
-    void  setPresetRecallEngine (bool v) noexcept { presetRecallEngine.store (v); }
 
     // v0.41 — per-Act Engine accessors (clamped & atomic). These let the
     // SettingsPage edit a specific Act's bundle without disturbing others.
@@ -660,6 +759,16 @@ public:
     {
         if (act < 0 || act >= kNumScenes) return;
         scenes[act].engineMix.store (juce::jlimit (0.0f, 1.0f, v));
+    }
+    float getActEngineIntensity (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0.5f;
+        return scenes[act].engineIntensity.load();
+    }
+    void  setActEngineIntensity (int act, float v) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].engineIntensity.store (juce::jlimit (0.0f, 1.0f, v));
     }
     int   getActInterpMode (int act) const noexcept
     {
@@ -700,6 +809,204 @@ public:
     {
         if (act < 0 || act >= kNumScenes) return;
         scenes[act].crushAll.store (v);
+    }
+
+    // v0.5.0 — per-Act filter mode (Tilt/LP/HP/BP).
+    int   getActFilterMode (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].filterMode.load();
+    }
+    void  setActFilterMode (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].filterMode.store (juce::jlimit (0, (int) loopsab::kNumFilterModes - 1, m));
+    }
+
+    // v0.5.0 — per-Act frequency split (Full/Low Only/High Only).
+    int   getActFreqSplitMode (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].freqSplitMode.load();
+    }
+    void  setActFreqSplitMode (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].freqSplitMode.store (juce::jlimit (0, 2, m));
+    }
+    float getActFreqSplitHz (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 500.0f;
+        return scenes[act].freqSplitHz.load();
+    }
+    void  setActFreqSplitHz (int act, float hz) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].freqSplitHz.store (juce::jlimit (80.0f, 8000.0f, hz));
+    }
+
+    // v0.5.0 — per-Act CHARACTER options (right-click knob modes).
+    int   getActDriveType (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].driveType.load();
+    }
+    void  setActDriveType (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].driveType.store (juce::jlimit (0, (int) loopsab::kNumDriveTypes - 1, m));
+    }
+    int   getActFoldTopology (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].foldTopology.load();
+    }
+    void  setActFoldTopology (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].foldTopology.store (juce::jlimit (0, (int) loopsab::kNumFoldTopologies - 1, m));
+    }
+    int   getActShimmerOctave (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].shimmerOctave.load();
+    }
+    void  setActShimmerOctave (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].shimmerOctave.store (juce::jlimit (0, (int) loopsab::kNumShimmerOctaves - 1, m));
+    }
+    int   getActSmearCharacter (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].smearCharacter.load();
+    }
+    void  setActSmearCharacter (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].smearCharacter.store (juce::jlimit (0, (int) loopsab::kNumSmearCharacters - 1, m));
+    }
+    int   getActStutterWindow (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].stutterWindow.load();
+    }
+    void  setActStutterWindow (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].stutterWindow.store (juce::jlimit (0, (int) loopsab::kNumStutterWindows - 1, m));
+    }
+    int   getActVarispeedCurve (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].varispeedCurve.load();
+    }
+    void  setActVarispeedCurve (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].varispeedCurve.store (juce::jlimit (0, (int) loopsab::kNumVarispeedCurves - 1, m));
+    }
+    int   getActSlideCurve (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].slideCurve.load();
+    }
+    void  setActSlideCurve (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].slideCurve.store (juce::jlimit (0, (int) loopsab::kNumSlideCurves - 1, m));
+    }
+    int   getActReverseMode (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].reverseMode.load();
+    }
+    void  setActReverseMode (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].reverseMode.store (juce::jlimit (0, (int) loopsab::kNumReverseModes - 1, m));
+    }
+
+    // v0.5.0 wave 2 — more CHARACTER getters/setters.
+    int   getActTapeMode (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].tapeMode.load();
+    }
+    void  setActTapeMode (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].tapeMode.store (juce::jlimit (0, (int) loopsab::kNumTapeModes - 1, m));
+    }
+    int   getActRingModWave (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].ringModWave.load();
+    }
+    void  setActRingModWave (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].ringModWave.store (juce::jlimit (0, (int) loopsab::kNumRingModWaves - 1, m));
+    }
+    int   getActChaosDistribution (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].chaosDistribution.load();
+    }
+    void  setActChaosDistribution (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].chaosDistribution.store (juce::jlimit (0, (int) loopsab::kNumChaosDistributions - 1, m));
+    }
+    int   getActFeedbackCharacter (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].feedbackCharacter.load();
+    }
+    void  setActFeedbackCharacter (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].feedbackCharacter.store (juce::jlimit (0, (int) loopsab::kNumFeedbackCharacters - 1, m));
+    }
+    int   getActStretchMode (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].stretchMode.load();
+    }
+    void  setActStretchMode (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].stretchMode.store (juce::jlimit (0, (int) loopsab::kNumStretchModes - 1, m));
+    }
+    int   getActJudderShape (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].judderShape.load();
+    }
+    void  setActJudderShape (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].judderShape.store (juce::jlimit (0, (int) loopsab::kNumJudderShapes - 1, m));
+    }
+    int   getActLookbackBehaviour (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].lookbackBehaviour.load();
+    }
+    void  setActLookbackBehaviour (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].lookbackBehaviour.store (juce::jlimit (0, (int) loopsab::kNumLookbackBehaviours - 1, m));
+    }
+    int   getActDecayCurve (int act) const noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return 0;
+        return scenes[act].decayCurve.load();
+    }
+    void  setActDecayCurve (int act, int m) noexcept
+    {
+        if (act < 0 || act >= kNumScenes) return;
+        scenes[act].decayCurve.store (juce::jlimit (0, (int) loopsab::kNumDecayCurves - 1, m));
     }
 
     // v0.25 / v0.42 — ring mod quantise to scale.
@@ -876,6 +1183,7 @@ public:
         kLfoSquare,
         kLfoSandH,
         kLfoEnvAHD,       // v0.34 — attack/hold/decay envelope, monopolar
+        kLfoEnvFollow,    // v0.5.0 — envelope follower, tracks input amplitude
         kNumLfoShapes
     };
 
@@ -931,6 +1239,16 @@ public:
         double envPos     = 0.0;
         float  envValue   = 0.0f;
         bool   envPending = false;  // set by trigger hook, consumed next sample
+
+        // v0.5.0 — envelope follower state (shape == kLfoEnvFollow).
+        // Smoothed absolute amplitude of the input signal. Rate knob
+        // repurposes as smoothing time when this shape is selected.
+        float  envFollowValue = 0.0f;
+
+        // v0.6.0 — envelope follower input gain / sensitivity.
+        // Multiplied onto the raw input level before tracking. 1.0 = unity,
+        // up to 10.0 = +20 dB boost for quiet signals.
+        std::atomic<float> envFollowGain { 1.0f };
     };
 
     // Accessors for LFO state. sceneIdx = Act (0..7), lfoIdx = LFO within Act (0..3).
@@ -954,6 +1272,8 @@ public:
     float getLfoDecayMs    (int sceneIdx, int lfoIdx) const noexcept;
     void  setLfoTrigMode   (int sceneIdx, int lfoIdx, int mode);
     int   getLfoTrigMode   (int sceneIdx, int lfoIdx) const noexcept;
+    void  setLfoEnvFollowGain (int sceneIdx, int lfoIdx, float g);
+    float getLfoEnvFollowGain (int sceneIdx, int lfoIdx) const noexcept;
     // v0.38 — cross-mod wiring. crossTargetLfo = another LFO (0..3) in
     // the same Act whose depth this LFO should modulate, or -1 to
     // disable. crossDepth is the amount (-1..+1). Signed: negative
@@ -964,6 +1284,7 @@ public:
     float getLfoCrossDepth  (int sceneIdx, int lfoIdx) const noexcept;
     // For UI visualization: read audio-thread-only phase and lastOutput (approximate reads from message thread OK).
     double getLfoPhase     (int sceneIdx, int lfoIdx) const noexcept;
+    float  getLfoOutput    (int sceneIdx, int lfoIdx) const noexcept;
     float  getLfoLastOutput (int sceneIdx, int lfoIdx) const noexcept;
 
     // v0.33 — ask whether ANY LFO on a given Act currently targets a
@@ -1026,6 +1347,13 @@ public:
 
     float getPeak (int idx) const noexcept;
     int   getPeakWritePos () const noexcept { return peakWritePos.load(); }
+
+    // v0.5.0 — slice output peak ring for slice preview waveform.
+    // Same bucket size as the input ring. Written from the voice output
+    // (post-FX, pre-mix) so the user sees the shaped slice waveform.
+    static constexpr int kSlicePeakRingSize = 2048;
+    float getSlicePeak (int idx) const noexcept;
+    int   getSlicePeakWritePos () const noexcept { return slicePeakWritePos.load(); }
 
     // v0.30 — expose buffer geometry for slice-position visualisation.
     int   getCircularWritePos  () const noexcept { return writePos; }
@@ -1163,6 +1491,8 @@ private:
     int lastWrappedStep = -1;
     long long lastSeqStepAbsForRatio = -1;  // v0.44 — forward-only wrap detection
 
+    long long fireCounter = 0;  // v0.5.0 — monotonic fire count for Reverse Alternate/PingPong modes
+
     juce::Random rng;
 
     // ------- sequencer state ---------------------------------------------
@@ -1279,7 +1609,8 @@ private:
     // (display name, file path). Rebuilt by rescanUserPresets. All
     // access is on the message thread; we hold a lock so the editor can
     // safely query during menu construction while a save is happening.
-    struct UserPresetEntry { juce::String name; juce::File file; };
+    // v0.7.0 — category holds the sub-folder name (empty = root).
+    struct UserPresetEntry { juce::String name; juce::String category; juce::File file; };
     mutable juce::CriticalSection userPresetsLock;
     std::vector<UserPresetEntry> userPresets;
 
@@ -1329,7 +1660,6 @@ private:
     // v0.40 — Engine: global character bundle.
     loopsab::CrossfadingOutputStage outputStage;  // post-mix colour, A/B crossfading
     std::atomic<int>     interpMode { loopsab::kInterpLinear };  // slice read interp (legacy global, kept as fallback)
-    std::atomic<bool>    presetRecallEngine { false };  // off = "designed for X" badge
 
     // v0.40 — "Designed for X" stash. Populated on preset load when the
     // recallEngine flag is OFF — the editor reads these to render the
@@ -1408,6 +1738,12 @@ private:
     std::atomic<int>   peakWritePos { 0 };
     float              peakAccum     = 0.0f;
     int                peakAccumCount = 0;
+
+    // v0.5.0 — slice output peak ring (mirrors the input ring).
+    std::atomic<float> slicePeakRing[kSlicePeakRingSize];
+    std::atomic<int>   slicePeakWritePos { 0 };
+    float              slicePeakAccum     = 0.0f;
+    int                slicePeakAccumCount = 0;
 
     // --- crush DSP state (reusable for per-voice and global paths) ------
     struct CrushState
@@ -1493,14 +1829,15 @@ private:
         float  haasBuffer[2][kHaasDelayMax] = {};
         int    haasWritePos       = 0;
 
-        // v0.25 — granular time-stretch state. Two overlapping grains
-        // read at normal speed (preserving pitch) while a source cursor
-        // advances at a slower rate (stretching time).
+        // v0.25 — granular time-stretch state. Overlapping grains read at
+        // normal speed (preserving pitch) while a source cursor advances
+        // at a slower rate (stretching time).
+        // v0.5.0 — upgraded to 4 grains at 90° spacing with interpolated
+        // reads and ~120ms grain length for smoother sound.
+        static constexpr int kNumStretchGrains = 4;
         double stretchSourcePos   = 0.0;   // slow-advancing logical position
-        double stretchGrainPosA   = 0.0;   // grain A read head
-        double stretchGrainPosB   = 0.0;   // grain B read head
-        double stretchGrainPosC   = 0.0;   // grain C read head
-        int    stretchGrainLen    = 2048;  // grain length in samples (~46ms @ 44.1k)
+        double stretchGrainPos[kNumStretchGrains] = {};  // per-grain read heads
+        int    stretchGrainLen    = 2048;  // grain length in samples
         int    stretchGrainCount  = 0;     // sample counter within grain cycle
 
         // v0.6 mangle row — baked at fire time, per-Act.
@@ -1520,11 +1857,49 @@ private:
         int    voiceInterpMode    = 0;     // loopsab::kInterpLinear
         bool   voiceCrushAA       = true;
         bool   voiceCrushMu       = true;
+        // v0.5.0 — filter mode + frequency split bake.
+        int    voiceFilterMode    = 0;     // loopsab::kFilterTilt
+        int    voiceFreqSplitMode = 0;     // 0=Full, 1=Low Only, 2=High Only
+        float  voiceFreqSplitHz   = 500.0f;
+        // Linkwitz-Riley crossover state (two cascaded butterworth per channel).
+        float  xoverLpL = 0.0f, xoverLpR = 0.0f;   // first-order LP state
+        float  xoverHpL = 0.0f, xoverHpR = 0.0f;   // first-order HP state
         // v0.42 — per-voice ring-mod quantise bake. The quantise flag used
         // to be read live from a global atomic; now it's snapshotted at
         // fire time from the source Act so the voice keeps its tonality
         // regardless of later Act flips.
         bool   voiceRingModQuant  = false;
+
+        // v0.5.0 — CHARACTER option bakes (right-click knob modes).
+        int    voiceDriveType      = 0;   // loopsab::kDriveTape
+        int    voiceFoldTopology   = 0;   // loopsab::kFoldSine
+        int    voiceShimmerOctave  = 0;   // loopsab::kShimmerUp1
+        int    voiceSmearCharacter = 0;   // loopsab::kSmearBlur
+        int    voiceStutterWindow  = 0;   // loopsab::kStutterFixed
+        int    voiceVarispeedCurve = 0;   // loopsab::kVariLinear
+        int    voiceSlideCurve     = 0;   // loopsab::kSlideLinear
+        int    voiceReverseMode    = 0;   // loopsab::kReverseRandom
+
+        // v0.5.0 wave 2 — more CHARACTER bakes.
+        int    voiceTapeMode          = 0;   // loopsab::kTapeClassic
+        int    voiceRingModWave       = 0;   // loopsab::kRingSine
+        int    voiceChaosDistribution = 0;   // loopsab::kChaosUniform
+        int    voiceFeedbackCharacter = 0;   // loopsab::kFeedbackClean
+        int    voiceStretchMode       = 0;   // loopsab::kStretchStandard
+        int    voiceJudderShape       = 0;   // loopsab::kJudderEven
+        int    voiceLookbackBehaviour = 0;   // loopsab::kLookbackFixed
+        int    voiceDecayCurve        = 0;   // loopsab::kDecayLinear
+
+        // Drunk-walk chaos state (Brownian motion accumulator).
+        float  chaosDrunkValue        = 0.0f;
+
+        // v0.5.0 — mode-aware feedback character state
+        float  feedbackFilterL        = 0.0f;  // one-pole LP state for Filtered feedback mode
+        float  feedbackFilterR        = 0.0f;
+        float  feedbackDuckEnv        = 0.0f;  // envelope follower for Ducked feedback mode
+
+        long long fireIndex        = 0;   // v0.5.0 — monotonic fire counter for Reverse mode branching
+
         int    sceneIdx           = -1;    // source Act index (-1 = live knobs)
 
         // v0.22 — stutter micro-loop state. A tiny circular buffer that
@@ -1606,6 +1981,10 @@ private:
     // ended. Reset to 0 in prepareToPlay.
     float smearFeedAmount = 0.0f;
 
+    // v0.5.0 — allpass filter state for Diffuse smear mode
+    float smearApStateL = 0.0f;
+    float smearApStateR = 0.0f;
+
     // v0.30 — mute gate envelope. Smoothly ramps 0↔1 instead of hard-
     // zeroing the output, eliminating clicks at mute step boundaries.
     float muteGateGain = 1.0f;
@@ -1625,6 +2004,9 @@ private:
     // v0.30 — global FX state for "all audio" toggles. These hold the
     // persistent filter/oscillator state needed when effects run on the
     // combined signal rather than per-voice slices.
+    // v0.5.0 — input level for envelope follower MOD shape.
+    float  envFollowInputLevel = 0.0f;  // peak abs of current sample (audio thread only)
+
     float  globalSvfLowL   = 0.0f;   // Tone SVF
     float  globalSvfBandL  = 0.0f;
     float  globalSvfLowR   = 0.0f;

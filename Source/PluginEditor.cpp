@@ -501,9 +501,61 @@ void LoopSaboteurEditor::WaveformStrip::paint (juce::Graphics& g)
         }
     }
 
+    // v0.5.0 — slice output waveform overlay (when in Slice view mode).
+    if (showSliceView)
+    {
+        const int sliceRingSize = LoopSaboteurProcessor::kSlicePeakRingSize;
+        const int sliceWritePos = proc->getSlicePeakWritePos();
+
+        juce::Path sliceFill;
+        bool sfirst = true;
+        for (int x = 0; x < w; ++x)
+        {
+            const int idxFromEnd = (w - 1) - x;
+            int sRingIdx = (sliceWritePos - 1 - idxFromEnd) % sliceRingSize;
+            if (sRingIdx < 0) sRingIdx += sliceRingSize;
+            const float sp = juce::jmin (proc->getSlicePeak (sRingIdx), 1.0f);
+            const float yTop = centerY - sp * halfH;
+            const float yBot = centerY + sp * halfH;
+            if (sfirst) { sliceFill.startNewSubPath ((float) x, yTop); sfirst = false; }
+            else        { sliceFill.lineTo ((float) x, yTop); }
+        }
+        // Bottom edge right→left
+        for (int x = w - 1; x >= 0; --x)
+        {
+            const int idxFromEnd = (w - 1) - x;
+            int sRingIdx = (sliceWritePos - 1 - idxFromEnd) % sliceRingSize;
+            if (sRingIdx < 0) sRingIdx += sliceRingSize;
+            const float sp = juce::jmin (proc->getSlicePeak (sRingIdx), 1.0f);
+            sliceFill.lineTo ((float) x, centerY + sp * halfH);
+        }
+        sliceFill.closeSubPath();
+
+        g.setColour (juce::Colour (0x5500ccff));  // cyan tint
+        g.fillPath (sliceFill);
+
+        // "SLICE" label
+        g.setColour (juce::Colour (0xaa00ccff));
+        g.setFont (juce::Font (juce::FontOptions (10.0f)));
+        g.drawText ("SLICE", r.reduced (4), juce::Justification::topRight);
+    }
+    else
+    {
+        // "INPUT" label when toggled
+        g.setColour (juce::Colour (0x44ffffff));
+        g.setFont (juce::Font (juce::FontOptions (10.0f)));
+        g.drawText ("INPUT", r.reduced (4), juce::Justification::topRight);
+    }
+
     // Playhead line at the right edge.
     g.setColour (Col::playing);
     g.drawLine ((float) (w - 1), 0.0f, (float) (w - 1), height, 1.5f);
+}
+
+void LoopSaboteurEditor::WaveformStrip::mouseDown (const juce::MouseEvent&)
+{
+    showSliceView = ! showSliceView;
+    repaint();
 }
 
 // ============================================================================
@@ -693,7 +745,7 @@ LoopSaboteurEditor::LoopSaboteurEditor (LoopSaboteurProcessor& p)
     configureKnob (shimmer,   "SHIMMER",    LoopSaboteurProcessor::kParamShimmer);
     configureKnob (res,       "RES",        LoopSaboteurProcessor::kParamRes);
     configureKnob (fold,      "FOLD",       LoopSaboteurProcessor::kParamFold);
-    configureKnob (gate,      "GATE",       LoopSaboteurProcessor::kParamGate);
+    configureKnob (gate,      "SHAPE",      LoopSaboteurProcessor::kParamGate);
     configureKnob (smear,     "SMEAR",      LoopSaboteurProcessor::kParamSmear);
     configureKnob (stutter,   "STUTTER",    LoopSaboteurProcessor::kParamStutter);
     configureKnob (chaos,     "CHAOS",      LoopSaboteurProcessor::kParamChaos);
@@ -1439,8 +1491,8 @@ static juce::String describeKnob (const juce::String& paramId)
     if (paramId == P::kParamSlide)     return "SLIDE\nPitch bend across the slice in semitones,\nfrom start to end.";
     if (paramId == P::kParamDecay)     return "DECAY\nLevel of each retrigger as a percentage\nof the last one. 100% = no decay.";
     if (paramId == P::kParamReverse)   return "REVERSE\nProbability that the grabbed slice plays\nbackwards.";
-    if (paramId == P::kParamCrunch)    return "BITS\nBit-depth reduction. Lowers resolution\nfor a crunchy, lo-fi digital texture.";
-    if (paramId == P::kParamCrushRate) return "RATE\nSample-rate decimation. Holds each\nsample longer for aliased, gritty\ndownsampling.";
+    if (paramId == P::kParamCrunch)    return "BITS\nBit-depth reduction. Lowers resolution\nfor a crunchy, lo-fi digital texture.\nSee Tools for Anti-alias and Mu-law\noptions that change the character.";
+    if (paramId == P::kParamCrushRate) return "RATE\nSample-rate decimation. Holds each\nsample longer for aliased, gritty\ndownsampling.\nSee Tools for Anti-alias and Mu-law\noptions that change the character.";
     if (paramId == P::kParamMix)       return "MIX\nDry/wet balance between the untouched\ninput and the processed slice.";
     if (paramId == P::kParamDrive)     return "DRIVE\nSoft tape saturation before the filter.\nAdds warmth and harmonics.";
     if (paramId == P::kParamTone)      return "TONE\nBipolar tilt EQ. Centre = no effect.\nLeft = darker (LP filter).\nRight = brighter (HF shelf boost).";
@@ -1453,7 +1505,7 @@ static juce::String describeKnob (const juce::String& paramId)
     if (paramId == P::kParamShimmer)   return "SHIMMER\nOctave-up feedback layer,\nshimmer-reverb style.";
     if (paramId == P::kParamRes)       return "RES\nResonant filter sweep amount on the\nwet slice.";
     if (paramId == P::kParamFold)      return "FOLD\nWavefolder drive. Clean at zero,\nmetallic/harmonic as it climbs.";
-    if (paramId == P::kParamGate)      return "GATE\nBuchla-style low-pass gate. Sound\ndarkens as it decays - percussive\nvactrol feel. Re-pings on each judder.";
+    if (paramId == P::kParamGate)      return "SHAPE\nBipolar transient control. Left = Soft\n(LPG-style attack softening, vactrol decay).\nRight = Snappy (transient emphasis, punch).\nCentre = bypass. Re-pings on each judder.";
     if (paramId == P::kParamSmear)     return "SMEAR\nBlurs slice boundaries with a short\ndiffusion tail.";
     if (paramId == P::kParamStutter)   return "STUTTER\nMicro-loop buffer repeat. Captures a\ntiny window and loops it - glitch-hop\nbuffer freeze. Higher = smaller loop.";
     if (paramId == P::kParamChaos)     return "CHAOS\nRandom per-slice modulation on other\nparameters. The wildcard.";
@@ -1634,35 +1686,6 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
                 g.drawFittedText (bdayTag, tagArea, juce::Justification::bottomLeft, 1);
             }
         }
-    }
-
-    // Easter egg: producer tag — painted just below the title bar.
-    // v0.42.5 — Now rendered with a tooltip-style dark pill + subtle
-    // border so the italic grey text doesn't get lost against the
-    // plugin's header area.
-    if (producerTagActive)
-    {
-        const juce::String tagText =
-            "made with too many late nights and not enough sleep. "
-            "this is why allmyfriendsaresynths";
-
-        juce::Font tagFont (juce::FontOptions (11.0f, juce::Font::italic));
-        const int textW = (int) tagFont.getStringWidthFloat (tagText);
-        const int padX = 8, padY = 3;
-        const int boxH = 14 + padY * 2;
-        auto tagBox = juce::Rectangle<int> (20, titleArea.getBottom() + 2,
-                                             textW + padX * 2, boxH);
-
-        // Tooltip-style dark pill with faint accent border.
-        g.setColour (juce::Colour (0xee111111));
-        g.fillRoundedRectangle (tagBox.toFloat(), 4.0f);
-        g.setColour (juce::Colour (0x55ffffff));
-        g.drawRoundedRectangle (tagBox.toFloat().reduced (0.5f), 4.0f, 1.0f);
-
-        g.setColour (juce::Colour (0xffd8d8d8));
-        g.setFont (tagFont);
-        g.drawText (tagText, tagBox.reduced (padX, padY),
-                    juce::Justification::centredLeft);
     }
 
     // v0.28 — K5 flanking columns: CHANCE (solid orange), MIX (solid white).
@@ -1947,6 +1970,32 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
         g.drawFittedText (txt, box.reduced (10, 0),
                           juce::Justification::centred, 1);
     }
+
+    // Easter egg: producer tag — painted last so it floats on top of all
+    // other elements. Tooltip-style dark pill + subtle border.
+    if (producerTagActive)
+    {
+        const juce::String tagText =
+            "made with too many late nights and not enough sleep. "
+            "this is why allmyfriendsaresynths";
+
+        juce::Font tagFont (juce::FontOptions (11.0f, juce::Font::italic));
+        const int textW = (int) tagFont.getStringWidthFloat (tagText);
+        const int padX = 8, padY = 3;
+        const int boxH = 14 + padY * 2;
+        auto tagBox = juce::Rectangle<int> (20, titleArea.getBottom() + 2,
+                                             textW + padX * 2, boxH);
+
+        g.setColour (juce::Colour (0xee111111));
+        g.fillRoundedRectangle (tagBox.toFloat(), 4.0f);
+        g.setColour (juce::Colour (0x55ffffff));
+        g.drawRoundedRectangle (tagBox.toFloat().reduced (0.5f), 4.0f, 1.0f);
+
+        g.setColour (juce::Colour (0xffd8d8d8));
+        g.setFont (tagFont);
+        g.drawText (tagText, tagBox.reduced (padX, padY),
+                    juce::Justification::centredLeft);
+    }
 }
 
 // ============================================================================
@@ -2212,10 +2261,11 @@ bool LoopSaboteurEditor::keyPressed (const juce::KeyPress& key)
 
 void LoopSaboteurEditor::mouseDown (const juce::MouseEvent& e)
 {
-    // Check if click is on the preset name label
+    // Check if click is on the preset name label — open preset browser
+    // directly (categories visible) rather than the full Acts I/O menu.
     if (presetNameLabel.getScreenBounds().contains (e.getScreenPosition()))
     {
-        showActIoMenu();
+        showPresetLoadMenu();
         return;
     }
 
@@ -2780,9 +2830,9 @@ void LoopSaboteurEditor::timerCallback()
 {
     // v0.40 — "Designed for X" Engine-recall badge management. The
     // processor stamps designedForLoadedAtMs whenever it loads a state
-    // with an Engine block while presetRecallEngine is OFF. We track the
-    // last seen stamp and (a) repaint once when a new badge appears, and
-    // (b) clear+repaint after kDesignedForTimeoutMs.
+    // with an Engine block. We track the last seen stamp and (a) repaint
+    // once when a new badge appears, and (b) clear+repaint after
+    // kDesignedForTimeoutMs.
     {
         const auto loadedAt = processorRef.getDesignedForLoadedAtMs();
         if (loadedAt != lastSeenDesignedForLoadedAt)
@@ -2862,11 +2912,17 @@ void LoopSaboteurEditor::timerCallback()
     // Easter egg: LOOP PACIFIST. All 8 Acts have MIX at 0% →
     // fade the title over ~10 seconds. Snaps back quickly (~1 s).
     {
-        bool allMixZero = true;
-        for (int i = 0; i < LoopSaboteurProcessor::kNumScenes; ++i)
+        // v0.5.0 — also trigger LOOP PACIFIST when Global Mix is at 0%.
+        const float gMix = processorRef.apvts.getRawParameterValue (LoopSaboteurProcessor::kParamGlobalMix)->load();
+        bool allMixZero = (gMix < 0.01f);
+        if (! allMixZero)
         {
-            if (processorRef.getSceneMix (i) > 0.01f)
-            { allMixZero = false; break; }
+            allMixZero = true;
+            for (int i = 0; i < LoopSaboteurProcessor::kNumScenes; ++i)
+            {
+                if (processorRef.getSceneMix (i) > 0.01f)
+                { allMixZero = false; break; }
+            }
         }
         // v0.41 — debug-menu force override snaps the fade straight to 1.0
         // for the duration so we don't have to wait the full ~10 s ramp.
@@ -3459,6 +3515,506 @@ void LoopSaboteurEditor::showKnobModAssignMenu (LabeledKnob& k)
                    refreshLfoTargetMarkers();
                });
 
+    // ── v0.5.0 — Crunch options on Bits / Rate knobs ──────────────
+    if (paramId == LoopSaboteurProcessor::kParamCrunch
+        || paramId == LoopSaboteurProcessor::kParamCrushRate)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Crunch Options (Act " + actLetter + ")");
+
+        const bool aa = processorRef.getActCrushAA (act);
+        m.addItem ("Anti-alias", true, aa,
+                   [this, act, aa]
+                   {
+                       processorRef.setActCrushAA (act, ! aa);
+                       repaint();
+                   });
+
+        const bool mu = processorRef.getActCrushMu (act);
+        m.addItem ("Mu-law companding", true, mu,
+                   [this, act, mu]
+                   {
+                       processorRef.setActCrushMu (act, ! mu);
+                       repaint();
+                   });
+
+        m.addSeparator();
+        m.addSectionHeader ("Interpolation");
+
+        const int curInterp = processorRef.getActInterpMode (act);
+        for (int im = 0; im < (int) loopsab::kNumInterpModes; ++im)
+        {
+            juce::String label (loopsab::interpShortName (im));
+            label += "  —  ";
+            label += loopsab::interpDescription (im);
+
+            m.addItem (label, true, (curInterp == im),
+                       [this, act, im]
+                       {
+                           processorRef.setActInterpMode (act, im);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Filter mode on Tone / Res knobs ─────────────────
+    if (paramId == LoopSaboteurProcessor::kParamTone
+        || paramId == LoopSaboteurProcessor::kParamRes)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Filter Type (Act " + actLetter + ")");
+
+        const int curFilter = processorRef.getActFilterMode (act);
+        for (int fm = 0; fm < (int) loopsab::kNumFilterModes; ++fm)
+        {
+            juce::String label (loopsab::filterShortName (fm));
+            label += "  —  ";
+            label += loopsab::filterDescription (fm);
+
+            m.addItem (label, true, (curFilter == fm),
+                       [this, act, fm]
+                       {
+                           processorRef.setActFilterMode (act, fm);
+                           repaint();
+                       });
+        }
+
+        m.addSeparator();
+        const bool dryTone = processorRef.getActFxOnDryTone (act);
+        m.addItem ("Apply to dry signal", true, dryTone,
+                   [this, act, dryTone]
+                   {
+                       processorRef.setActFxOnDryTone (act, ! dryTone);
+                       repaint();
+                   });
+    }
+
+    // ── v0.5.0 — Drive type on Drive knob ────────────────────────
+    if (paramId == LoopSaboteurProcessor::kParamDrive)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Drive Type (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActDriveType (act);
+        for (int i = 0; i < (int) loopsab::kNumDriveTypes; ++i)
+        {
+            juce::String label (loopsab::driveShortName (i));
+            label += "  —  ";
+            label += loopsab::driveDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActDriveType (act, i);
+                           repaint();
+                       });
+        }
+
+        m.addSeparator();
+        const bool dryDrive = processorRef.getActFxOnDryDrive (act);
+        m.addItem ("Apply to dry signal", true, dryDrive,
+                   [this, act, dryDrive]
+                   {
+                       processorRef.setActFxOnDryDrive (act, ! dryDrive);
+                       repaint();
+                   });
+    }
+
+    // ── v0.5.0 — Fold topology on Fold knob ─────────────────────
+    if (paramId == LoopSaboteurProcessor::kParamFold)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Fold Shape (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActFoldTopology (act);
+        for (int i = 0; i < (int) loopsab::kNumFoldTopologies; ++i)
+        {
+            juce::String label (loopsab::foldShortName (i));
+            label += "  —  ";
+            label += loopsab::foldDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActFoldTopology (act, i);
+                           repaint();
+                       });
+        }
+
+        m.addSeparator();
+        const bool dryFold = processorRef.getActFxOnDryFold (act);
+        m.addItem ("Apply to dry signal", true, dryFold,
+                   [this, act, dryFold]
+                   {
+                       processorRef.setActFxOnDryFold (act, ! dryFold);
+                       repaint();
+                   });
+    }
+
+    // ── v0.5.0 — Shimmer octave on Shimmer knob ─────────────────
+    if (paramId == LoopSaboteurProcessor::kParamShimmer)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Shimmer Interval (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActShimmerOctave (act);
+        for (int i = 0; i < (int) loopsab::kNumShimmerOctaves; ++i)
+        {
+            juce::String label (loopsab::shimmerShortName (i));
+            label += "  —  ";
+            label += loopsab::shimmerDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActShimmerOctave (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Smear character on Smear knob ──────────────────
+    if (paramId == LoopSaboteurProcessor::kParamSmear)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Smear Character (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActSmearCharacter (act);
+        for (int i = 0; i < (int) loopsab::kNumSmearCharacters; ++i)
+        {
+            juce::String label (loopsab::smearShortName (i));
+            label += "  —  ";
+            label += loopsab::smearDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActSmearCharacter (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Stutter window on Stutter knob ─────────────────
+    if (paramId == LoopSaboteurProcessor::kParamStutter)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Stutter Window (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActStutterWindow (act);
+        for (int i = 0; i < (int) loopsab::kNumStutterWindows; ++i)
+        {
+            juce::String label (loopsab::stutterShortName (i));
+            label += "  —  ";
+            label += loopsab::stutterDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActStutterWindow (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Varispeed curve on Varispeed knob ──────────────
+    if (paramId == LoopSaboteurProcessor::kParamVarispeed)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Brake Curve (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActVarispeedCurve (act);
+        for (int i = 0; i < (int) loopsab::kNumVarispeedCurves; ++i)
+        {
+            juce::String label (loopsab::varispeedShortName (i));
+            label += "  —  ";
+            label += loopsab::varispeedDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActVarispeedCurve (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Slide curve on Slide knob ──────────────────────
+    if (paramId == LoopSaboteurProcessor::kParamSlide)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Slide Curve (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActSlideCurve (act);
+        for (int i = 0; i < (int) loopsab::kNumSlideCurves; ++i)
+        {
+            juce::String label (loopsab::slideShortName (i));
+            label += "  —  ";
+            label += loopsab::slideDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActSlideCurve (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Reverse mode on Reverse knob ───────────────────
+    if (paramId == LoopSaboteurProcessor::kParamReverse)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Reverse Mode (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActReverseMode (act);
+        for (int i = 0; i < (int) loopsab::kNumReverseModes; ++i)
+        {
+            juce::String label (loopsab::reverseShortName (i));
+            label += "  —  ";
+            label += loopsab::reverseDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActReverseMode (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Stereo mode on Stereo knob ─────────────────────
+    if (paramId == LoopSaboteurProcessor::kParamStereo)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Stereo Mode (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActStereoMode (act);
+        auto addStereoItem = [this, &m, cur, act] (const juce::String& label, int mode)
+        {
+            m.addItem (label, true, (cur == mode),
+                       [this, act, mode]
+                       {
+                           processorRef.setActStereoMode (act, mode);
+                           repaint();
+                       });
+        };
+        addStereoItem ("Random",    0);
+        addStereoItem ("Ping-Pong", 1);
+        addStereoItem ("Auto-Pan",  2);
+        addStereoItem ("Haas",      3);
+    }
+
+    // ── v0.5.0 — Ring mod quantise on Ring Mod knob ──────────────
+    if (paramId == LoopSaboteurProcessor::kParamRingMod)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Ring Mod (Act " + actLetter + ")");
+
+        const bool quant = processorRef.getActRingModQuant (act);
+        m.addItem ("Quantise to scale", true, quant,
+                   [this, act, quant]
+                   {
+                       processorRef.setActRingModQuant (act, ! quant);
+                       repaint();
+                   });
+
+        m.addSeparator();
+        m.addSectionHeader ("Ring Mod Waveform (Act " + actLetter + ")");
+
+        const int curWave = processorRef.getActRingModWave (act);
+        for (int i = 0; i < (int) loopsab::kNumRingModWaves; ++i)
+        {
+            juce::String label (loopsab::ringModWaveShortName (i));
+            label += "  —  ";
+            label += loopsab::ringModWaveDescription (i);
+
+            m.addItem (label, true, (curWave == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActRingModWave (act, i);
+                           repaint();
+                       });
+        }
+
+        m.addSeparator();
+        const bool dryRing = processorRef.getActFxOnDryRingMod (act);
+        m.addItem ("Apply to dry signal", true, dryRing,
+                   [this, act, dryRing]
+                   {
+                       processorRef.setActFxOnDryRingMod (act, ! dryRing);
+                       repaint();
+                   });
+    }
+
+    // ── v0.5.0 — Tape mode on Tape knob ──────────────────────────
+    if (paramId == LoopSaboteurProcessor::kParamTape)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Tape Mode (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActTapeMode (act);
+        for (int i = 0; i < (int) loopsab::kNumTapeModes; ++i)
+        {
+            juce::String label (loopsab::tapeShortName (i));
+            label += "  —  ";
+            label += loopsab::tapeDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActTapeMode (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Chaos distribution on Chaos knob ───────────────
+    if (paramId == LoopSaboteurProcessor::kParamChaos)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Chaos Distribution (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActChaosDistribution (act);
+        for (int i = 0; i < (int) loopsab::kNumChaosDistributions; ++i)
+        {
+            juce::String label (loopsab::chaosShortName (i));
+            label += "  —  ";
+            label += loopsab::chaosDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActChaosDistribution (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Feedback character on Feedback knob ────────────
+    if (paramId == LoopSaboteurProcessor::kParamFeedback)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Feedback Character (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActFeedbackCharacter (act);
+        for (int i = 0; i < (int) loopsab::kNumFeedbackCharacters; ++i)
+        {
+            juce::String label (loopsab::feedbackShortName (i));
+            label += "  —  ";
+            label += loopsab::feedbackDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActFeedbackCharacter (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Stretch mode on Stretch knob ─────────────────────
+    if (paramId == LoopSaboteurProcessor::kParamStretch)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Stretch Mode (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActStretchMode (act);
+        for (int i = 0; i < (int) loopsab::kNumStretchModes; ++i)
+        {
+            juce::String label (loopsab::stretchShortName (i));
+            label += "  —  ";
+            label += loopsab::stretchDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActStretchMode (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Judder shape on Judder knob ───────────────────
+    if (paramId == LoopSaboteurProcessor::kParamJudder)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Judder Shape (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActJudderShape (act);
+        for (int i = 0; i < (int) loopsab::kNumJudderShapes; ++i)
+        {
+            juce::String label (loopsab::judderShortName (i));
+            label += "  —  ";
+            label += loopsab::judderDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActJudderShape (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.6.0 — Lookback behaviour on Lookback knob ────────────
+    if (paramId == LoopSaboteurProcessor::kParamLookback)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Lookback Behaviour (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActLookbackBehaviour (act);
+        for (int i = 0; i < (int) loopsab::kNumLookbackBehaviours; ++i)
+        {
+            juce::String label (loopsab::lookbackShortName (i));
+            label += "  —  ";
+            label += loopsab::lookbackDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActLookbackBehaviour (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.6.0 — Decay curve on Decay knob ──────────────────────
+    if (paramId == LoopSaboteurProcessor::kParamDecay)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Decay Curve (Act " + actLetter + ")");
+
+        const int cur = processorRef.getActDecayCurve (act);
+        for (int i = 0; i < (int) loopsab::kNumDecayCurves; ++i)
+        {
+            juce::String label (loopsab::decayShortName (i));
+            label += "  —  ";
+            label += loopsab::decayDescription (i);
+
+            m.addItem (label, true, (cur == i),
+                       [this, act, i]
+                       {
+                           processorRef.setActDecayCurve (act, i);
+                           repaint();
+                       });
+        }
+    }
+
+    // ── v0.5.0 — Fine-tune mode on Pitch knob ───────────────────
+    if (paramId == LoopSaboteurProcessor::kParamPitch)
+    {
+        m.addSeparator();
+        m.addSectionHeader ("Pitch (Global)");
+
+        m.addItem ("Fine-tune mode  (cents)", true, fineMode,
+                   [this]
+                   {
+                       fineMode = ! fineMode;
+                       applyPitchSlideFineMode();
+                   });
+    }
+
     // Apply stencil look-and-feel + anchor at the slider so the menu
     // appears at the knob.
     m.setLookAndFeel (&stencilLF);
@@ -3605,48 +4161,15 @@ void LoopSaboteurEditor::showActIoMenu()
     // every slot for the "bank" variant).
     m.addSectionHeader ("PRESETS");
     {
-        // Build category submenus so presets are grouped by type
-        // (Drums, Glitch, Pads, Lo-Fi, etc.).
+        // v0.7.0 — user presets first, factory in a subfolder.
         juce::PopupMenu presetCurrent;
         const int numPresets = LoopSaboteurProcessor::getNumActPresets();
+        const int numUser = processorRef.getNumUserPresets();
 
-        // Collect unique categories in order of first appearance.
-        juce::StringArray categories;
-        for (int p = 0; p < numPresets; ++p)
+        // --- User presets (top level, with sub-categories) ---------------
         {
-            const juce::String cat (LoopSaboteurProcessor::getActPreset (p).category);
-            if (! categories.contains (cat))
-                categories.add (cat);
-        }
-
-        for (const auto& cat : categories)
-        {
-            juce::PopupMenu catMenu;
-            for (int p = 0; p < numPresets; ++p)
-            {
-                const auto& preset = LoopSaboteurProcessor::getActPreset (p);
-                if (juce::String (preset.category) != cat) continue;
-                catMenu.addItem (juce::String (preset.name),
-                                 [this, p]
-                                 {
-                                     // BUG 1 fix: processor now sets scenePresetIdx via applyActPreset
-                                     const int sel = processorRef.getSelectedScene();
-                                     processorRef.applyActPreset (sel, p);
-                                     processorRef.loadSceneToKnobs (sel);
-                                     refreshSceneButtons();
-                                     updatePresetNameLabel();
-                                 });
-            }
-            presetCurrent.addSubMenu (cat, catMenu);
-        }
-
-        // v0.38 — user presets. Appended as a "User" sub-menu alongside
-        // the factory categories. If the user has saved nothing, the
-        // sub-menu is still shown but disabled, as a discoverability nudge.
-        {
-            juce::PopupMenu userMenu;
-            const int numUser = processorRef.getNumUserPresets();
-            for (int u = 0; u < numUser; ++u)
+            // Build a lambda for the per-user-preset sub-entry (load / reveal / delete).
+            auto buildUserEntry = [this, &letter] (int u) -> juce::PopupMenu
             {
                 const juce::String name = processorRef.getUserPresetName (u);
                 juce::PopupMenu entry;
@@ -3667,10 +4190,6 @@ void LoopSaboteurEditor::showActIoMenu()
                                {
                                    processorRef.getUserPresetFile (u).revealToUser();
                                });
-                // Capture the file (not the index) so deletion is safe
-                // even if the list gets re-scanned between menu-click
-                // and confirm-dialog (e.g. user saves another preset
-                // while the confirm sheet is still open).
                 const auto presetFile = processorRef.getUserPresetFile (u);
                 entry.addItem ("Delete",
                                [this, presetFile, name]
@@ -3691,43 +4210,130 @@ void LoopSaboteurEditor::showActIoMenu()
                                            }
                                        });
                                });
-                userMenu.addSubMenu (name, entry);
+                return entry;
+            };
+
+            // Collect user sub-categories.
+            juce::StringArray userCats;
+            for (int u = 0; u < numUser; ++u)
+            {
+                const auto cat = processorRef.getUserPresetCategory (u);
+                if (cat.isNotEmpty() && ! userCats.contains (cat))
+                    userCats.add (cat);
             }
+            userCats.sort (true);
+
+            // Root-level user presets (no category).
+            for (int u = 0; u < numUser; ++u)
+            {
+                if (processorRef.getUserPresetCategory (u).isNotEmpty()) continue;
+                const juce::String name = processorRef.getUserPresetName (u);
+                presetCurrent.addSubMenu (name, buildUserEntry (u));
+            }
+
+            // Sub-category submenus with rename/delete.
+            for (const auto& cat : userCats)
+            {
+                juce::PopupMenu catMenu;
+                for (int u = 0; u < numUser; ++u)
+                {
+                    if (processorRef.getUserPresetCategory (u) != cat) continue;
+                    const juce::String name = processorRef.getUserPresetName (u);
+                    catMenu.addSubMenu (name, buildUserEntry (u));
+                }
+                catMenu.addSeparator();
+                catMenu.addItem ("Rename category...",
+                                 [this, cat]
+                                 {
+                                     auto* w = new juce::AlertWindow ("Rename category",
+                                         "Enter a new name for \"" + cat + "\":",
+                                         juce::MessageBoxIconType::NoIcon);
+                                     w->addTextEditor ("newName", cat, "New name:");
+                                     w->addButton ("Rename", 1, juce::KeyPress (juce::KeyPress::returnKey));
+                                     w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+                                     w->enterModalState (true,
+                                         juce::ModalCallbackFunction::create (
+                                             [this, w, cat] (int result)
+                                             {
+                                                 if (result == 1)
+                                                     processorRef.renameUserPresetCategory (
+                                                         cat, w->getTextEditorContents ("newName"));
+                                                 delete w;
+                                             }), false);
+                                 });
+                catMenu.addItem ("Delete category (move presets to root)",
+                                 [this, cat]
+                                 {
+                                     processorRef.deleteUserPresetCategory (cat);
+                                 });
+                presetCurrent.addSubMenu (cat, catMenu);
+            }
+
             if (numUser == 0)
-                userMenu.addItem ("(no user presets yet)", false, false, [] {});
-            presetCurrent.addSubMenu ("User (" + juce::String (numUser) + ")", userMenu);
+                presetCurrent.addItem ("(no user presets yet)", false, false, [] {});
+        }
+
+        presetCurrent.addSeparator();
+
+        // --- Factory presets in a subfolder -------------------------------
+        {
+            juce::PopupMenu factoryMenu;
+
+            juce::StringArray categories;
+            for (int p = 0; p < numPresets; ++p)
+            {
+                const juce::String cat (LoopSaboteurProcessor::getActPreset (p).category);
+                if (! categories.contains (cat))
+                    categories.add (cat);
+            }
+
+            if (categories.size() <= 1)
+            {
+                for (int p = 0; p < numPresets; ++p)
+                {
+                    const auto& preset = LoopSaboteurProcessor::getActPreset (p);
+                    factoryMenu.addItem (juce::String (preset.name),
+                                         [this, p]
+                                         {
+                                             const int sel = processorRef.getSelectedScene();
+                                             processorRef.applyActPreset (sel, p);
+                                             processorRef.loadSceneToKnobs (sel);
+                                             refreshSceneButtons();
+                                             updatePresetNameLabel();
+                                         });
+                }
+            }
+            else
+            {
+                for (const auto& cat : categories)
+                {
+                    juce::PopupMenu catMenu;
+                    for (int p = 0; p < numPresets; ++p)
+                    {
+                        const auto& preset = LoopSaboteurProcessor::getActPreset (p);
+                        if (juce::String (preset.category) != cat) continue;
+                        catMenu.addItem (juce::String (preset.name),
+                                         [this, p]
+                                         {
+                                             const int sel = processorRef.getSelectedScene();
+                                             processorRef.applyActPreset (sel, p);
+                                             processorRef.loadSceneToKnobs (sel);
+                                             refreshSceneButtons();
+                                             updatePresetNameLabel();
+                                         });
+                    }
+                    factoryMenu.addSubMenu (cat, catMenu);
+                }
+            }
+
+            presetCurrent.addSubMenu ("Factory (" + juce::String (numPresets) + ")", factoryMenu);
         }
 
         m.addSubMenu ("Load preset into act (" + letter + ")...", presetCurrent);
 
-        // v0.38 — save the current Act as a user preset. Prompts for a
-        // name, writes to ~/Library/Application Support/LoopSaboteur/
-        // UserPresets (or platform equivalent), then re-scans so the
-        // entry shows up in the User sub-menu next time this menu opens.
+        // v0.7.0 — styled save dialog with category picker.
         m.addItem ("Save act " + letter + " as user preset...",
-                   [this, letter]
-                   {
-                       auto* w = new juce::AlertWindow ("Save user preset",
-                           "Name this preset. It will be stored in your user preset folder "
-                           "and show up under 'Load preset > User' across all sessions.",
-                           juce::MessageBoxIconType::NoIcon);
-                       w->addTextEditor ("name", "Act " + letter, "Preset name:");
-                       w->addButton ("Save",   1, juce::KeyPress (juce::KeyPress::returnKey));
-                       w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
-                       w->enterModalState (true,
-                           juce::ModalCallbackFunction::create (
-                               [this, w] (int result)
-                               {
-                                   if (result == 1)
-                                   {
-                                       const auto name = w->getTextEditorContents ("name");
-                                       const int sel = processorRef.getSelectedScene();
-                                       processorRef.saveCurrentActAsUserPreset (sel, name);
-                                   }
-                                   delete w;
-                               }),
-                           false);
-                   });
+                   [this, letter] { showSavePresetDialog ("Act " + letter); });
 
         // v0.30 — "Fill all 8" removed per Steve's request.
     }
@@ -3771,6 +4377,189 @@ void LoopSaboteurEditor::showActIoMenu()
 
     m.setLookAndFeel (&stencilLF);
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (ioButton));
+}
+
+// v0.5.0 — clicking the preset name label opens just the preset browser.
+// v0.7.0 — user presets are shown first (at the top level, with sub-
+// categories as submenus). Factory presets are tucked into a "Factory"
+// subfolder at the bottom so users' own sounds take priority.
+void LoopSaboteurEditor::showPresetLoadMenu()
+{
+    juce::PopupMenu m;
+    const int numPresets = LoopSaboteurProcessor::getNumActPresets();
+
+    // --- 1. User presets (top level) -----------------------------------
+    {
+        const int numUser = processorRef.getNumUserPresets();
+
+        // Collect user categories (sub-folders).
+        juce::StringArray userCats;
+        for (int u = 0; u < numUser; ++u)
+        {
+            const auto cat = processorRef.getUserPresetCategory (u);
+            if (cat.isNotEmpty() && ! userCats.contains (cat))
+                userCats.add (cat);
+        }
+        userCats.sort (true);
+
+        // Root-level user presets (no category).
+        for (int u = 0; u < numUser; ++u)
+        {
+            if (processorRef.getUserPresetCategory (u).isNotEmpty()) continue;
+            const juce::String name = processorRef.getUserPresetName (u);
+            m.addItem (name,
+                       [this, u]
+                       {
+                           const int sel = processorRef.getSelectedScene();
+                           if (processorRef.applyUserPreset (sel, u))
+                           {
+                               processorRef.loadSceneToKnobs (sel);
+                               refreshSceneButtons();
+                               updatePresetNameLabel();
+                           }
+                       });
+        }
+
+        // Sub-category submenus with rename/delete at the bottom.
+        for (const auto& cat : userCats)
+        {
+            juce::PopupMenu catMenu;
+            for (int u = 0; u < numUser; ++u)
+            {
+                if (processorRef.getUserPresetCategory (u) != cat) continue;
+                const juce::String name = processorRef.getUserPresetName (u);
+                catMenu.addItem (name,
+                                 [this, u]
+                                 {
+                                     const int sel = processorRef.getSelectedScene();
+                                     if (processorRef.applyUserPreset (sel, u))
+                                     {
+                                         processorRef.loadSceneToKnobs (sel);
+                                         refreshSceneButtons();
+                                         updatePresetNameLabel();
+                                     }
+                                 });
+            }
+            catMenu.addSeparator();
+            catMenu.addItem ("Rename category...",
+                             [this, cat]
+                             {
+                                 auto* w = new juce::AlertWindow ("Rename category",
+                                     "Enter a new name for \"" + cat + "\":",
+                                     juce::MessageBoxIconType::NoIcon);
+                                 w->addTextEditor ("newName", cat, "New name:");
+                                 w->addButton ("Rename", 1, juce::KeyPress (juce::KeyPress::returnKey));
+                                 w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+                                 w->enterModalState (true,
+                                     juce::ModalCallbackFunction::create (
+                                         [this, w, cat] (int result)
+                                         {
+                                             if (result == 1)
+                                                 processorRef.renameUserPresetCategory (
+                                                     cat, w->getTextEditorContents ("newName"));
+                                             delete w;
+                                         }), false);
+                             });
+            catMenu.addItem ("Delete category (move presets to root)",
+                             [this, cat]
+                             {
+                                 processorRef.deleteUserPresetCategory (cat);
+                             });
+            m.addSubMenu (cat, catMenu);
+        }
+
+        if (numUser == 0)
+            m.addItem ("(no user presets yet)", false, false, [] {});
+    }
+
+    m.addSeparator();
+
+    // --- 2. Factory presets in a "Factory" subfolder -------------------
+    {
+        juce::PopupMenu factoryMenu;
+
+        // Collect unique factory categories.
+        juce::StringArray categories;
+        for (int p = 0; p < numPresets; ++p)
+        {
+            const juce::String cat (LoopSaboteurProcessor::getActPreset (p).category);
+            if (! categories.contains (cat))
+                categories.add (cat);
+        }
+
+        if (categories.size() <= 1)
+        {
+            for (int p = 0; p < numPresets; ++p)
+            {
+                const auto& preset = LoopSaboteurProcessor::getActPreset (p);
+                factoryMenu.addItem (juce::String (preset.name),
+                                     [this, p]
+                                     {
+                                         const int sel = processorRef.getSelectedScene();
+                                         processorRef.applyActPreset (sel, p);
+                                         processorRef.loadSceneToKnobs (sel);
+                                         refreshSceneButtons();
+                                         updatePresetNameLabel();
+                                     });
+            }
+        }
+        else
+        {
+            for (const auto& cat : categories)
+            {
+                juce::PopupMenu catMenu;
+                for (int p = 0; p < numPresets; ++p)
+                {
+                    const auto& preset = LoopSaboteurProcessor::getActPreset (p);
+                    if (juce::String (preset.category) != cat) continue;
+                    catMenu.addItem (juce::String (preset.name),
+                                     [this, p]
+                                     {
+                                         const int sel = processorRef.getSelectedScene();
+                                         processorRef.applyActPreset (sel, p);
+                                         processorRef.loadSceneToKnobs (sel);
+                                         refreshSceneButtons();
+                                         updatePresetNameLabel();
+                                     });
+                }
+                factoryMenu.addSubMenu (cat, catMenu);
+            }
+        }
+
+        m.addSubMenu ("Factory (" + juce::String (numPresets) + ")", factoryMenu);
+    }
+
+    m.setLookAndFeel (&stencilLF);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (presetNameLabel));
+}
+
+// v0.7.0 — themed preset save overlay with category combo box.
+void LoopSaboteurEditor::showSavePresetDialog (const juce::String& defaultName)
+{
+    if (! savePresetOverlay)
+    {
+        savePresetOverlay = std::make_unique<SavePresetOverlay>();
+        savePresetOverlay->setLookAndFeel (&stencilLF);
+        addChildComponent (*savePresetOverlay);
+    }
+
+    // Populate with existing categories.
+    savePresetOverlay->configure (defaultName, processorRef.getUserPresetCategories());
+    savePresetOverlay->setBounds (getLocalBounds());
+    savePresetOverlay->setVisible (true);
+    savePresetOverlay->toFront (true);
+
+    savePresetOverlay->onSave = [this] (const juce::String& name, const juce::String& cat)
+    {
+        const int sel = processorRef.getSelectedScene();
+        processorRef.saveCurrentActAsUserPreset (sel, name, cat);
+        savePresetOverlay->setVisible (false);
+        updatePresetNameLabel();
+    };
+    savePresetOverlay->onCancel = [this]
+    {
+        savePresetOverlay->setVisible (false);
+    };
 }
 
 void LoopSaboteurEditor::exportCurrentAct()
@@ -4055,7 +4844,7 @@ void LoopSaboteurEditor::showSettingsMenu()
         if (rootParam)
         {
             const int curRoot = rootParam->getIndex();
-            for (int i = 0; i < rootParam->choices.size(); ++i)
+            for (int i = 0; i < (int) rootParam->choices.size(); ++i)
             {
                 const int idx = i;
                 rootMenu.addItem (rootParam->choices[i], true, curRoot == idx,
@@ -4074,7 +4863,7 @@ void LoopSaboteurEditor::showSettingsMenu()
         if (scaleParam)
         {
             const int curScale = scaleParam->getIndex();
-            for (int i = 0; i < scaleParam->choices.size(); ++i)
+            for (int i = 0; i < (int) scaleParam->choices.size(); ++i)
             {
                 const int idx = i;
                 scaleMenu.addItem (scaleParam->choices[i], true, curScale == idx,
@@ -4166,15 +4955,6 @@ void LoopSaboteurEditor::showSettingsMenu()
                [this]
                {
                    processorRef.setCrushAllAudio (! processorRef.getCrushAllAudio());
-               });
-
-    // --- ENGINE preset recall toggle --------------------------------------
-    m.addSeparator();
-    m.addItem ("Presets recall Engine settings",
-               true, processorRef.getPresetRecallEngine(),
-               [this]
-               {
-                   processorRef.setPresetRecallEngine (! processorRef.getPresetRecallEngine());
                });
 
     // --- RING MOD --------------------------------------------------------
@@ -5619,9 +6399,10 @@ void LoopSaboteurEditor::ModPage::WaveformPreview::paint (juce::Graphics& g)
         {
             const auto& xs = xSources[i];
             float srcVal;
-            if (xs.srcShape == (int) LoopSaboteurProcessor::kLfoEnvAHD)
+            if (xs.srcShape == (int) LoopSaboteurProcessor::kLfoEnvAHD
+                || xs.srcShape == (int) LoopSaboteurProcessor::kLfoEnvFollow)
             {
-                // Env is monopolar 0..+1; lastOutput already has depth
+                // Env/Follow is monopolar 0..+1; lastOutput already has depth
                 // baked in, so we use it as-is.
                 srcVal = xs.lastOutputNow;
             }
@@ -5663,11 +6444,12 @@ void LoopSaboteurEditor::ModPage::WaveformPreview::paint (juce::Graphics& g)
     // v0.34 — env mode: draw a single AHD envelope cycle spanning the
     // scope. Monopolar (zero line = idle, peak above), flipped below
     // the zero line when depth is negative.
-    const bool isEnv = (shape == (int) LoopSaboteurProcessor::kLfoEnvAHD);
+    const bool isEnv    = (shape == (int) LoopSaboteurProcessor::kLfoEnvAHD);
+    const bool isFollow = (shape == (int) LoopSaboteurProcessor::kLfoEnvFollow);
 
-    // "Off" state: rate==Off only applies to LFO shapes; env mode
-    // ignores rate, so env is never considered "off".
-    const bool isOff = (! isEnv) && (rateIdx <= 0);
+    // "Off" state: rate==Off only applies to LFO shapes; env/follow modes
+    // ignore rate, so they're never considered "off".
+    const bool isOff = (! isEnv && ! isFollow) && (rateIdx <= 0);
     const juce::Colour waveColour = isOff
         ? juce::Colour (0xff555555)
         : juce::Colour (0xffff5a3c);
@@ -5723,6 +6505,30 @@ void LoopSaboteurEditor::ModPage::WaveformPreview::paint (juce::Graphics& g)
         g.drawVerticalLine ((int) xA, r.getY() + 2.0f, r.getBottom() - 2.0f);
         if (hFrac > 1.0e-4f)
             g.drawVerticalLine ((int) xH, r.getY() + 2.0f, r.getBottom() - 2.0f);
+    }
+    else if (isFollow)
+    {
+        // v0.5.0 — Envelope follower: show the current tracked level as
+        // a filled bar from the zero line. The bar bounces with input
+        // amplitude — gives visual feedback that the follower is alive.
+        float envVal = 0.0f;
+        if (proc != nullptr)
+            envVal = proc->getLfoOutput (sceneIdx, lfoIdx);
+        // envVal is bipolar (depth already applied). We want monopolar display.
+        const float absVal = juce::jlimit (0.0f, 1.0f, std::abs (envVal));
+        const float barH = absVal * maxScale;
+        const float barTop = cy - barH * depthSign;
+
+        g.setColour (waveColour.withAlpha (0.25f));
+        g.fillRect (r.getX(), juce::jmin (cy, barTop),
+                    r.getWidth(), std::abs (barTop - cy));
+        g.setColour (waveColour);
+        g.drawHorizontalLine ((int) barTop, r.getX(), r.getRight());
+
+        // Label
+        g.setColour (juce::Colour (0xff888888));
+        g.setFont (juce::Font (juce::FontOptions (10.0f)));
+        g.drawText ("ENV FOLLOW", r.reduced (4), juce::Justification::topLeft);
     }
     else
     {
@@ -5856,9 +6662,10 @@ void LoopSaboteurEditor::ModPage::resized()
         // In Env mode only, shrink the preview to 56pt and the per-row
         // height to 18pt — that comes in ~222pt and leaves the X-Mod
         // row visible with breathing space. LFO mode is unchanged.
-        const bool isEnv = (shapeBoxes[lfo].getSelectedItemIndex()
-                            == (int) LoopSaboteurProcessor::kLfoEnvAHD);
-        const int previewH = isEnv ? 56 : 70;
+        const int selShape = shapeBoxes[lfo].getSelectedItemIndex();
+        const bool isEnv = (selShape == (int) LoopSaboteurProcessor::kLfoEnvAHD);
+        const bool isFollow = (selShape == (int) LoopSaboteurProcessor::kLfoEnvFollow);
+        const int previewH = (isEnv || isFollow) ? 56 : 70;
         const int envRowH  = 18;
 
         // Waveform preview
@@ -5890,6 +6697,24 @@ void LoopSaboteurEditor::ModPage::resized()
             rateBoxes[lfo].setBounds (rateCtl.withTrimmedRight (syncW + 4));
             syncButtons[lfo].setBounds (rateCtl.removeFromRight (syncW));
 
+            // v0.50 — Envelope follower: show sensitivity slider where the
+            // AHD row would normally go.
+            if (isFollow)
+            {
+                const int labelW = 28;
+                auto gainRow = panelBounds.removeFromTop (envRowH).reduced (0, 2);
+                envFollowGainLabels[lfo].setBounds (gainRow.removeFromLeft (labelW));
+                envFollowGainSliders[lfo].setBounds (gainRow);
+            }
+            else
+            {
+                // Hide gain slider for regular LFO mode
+                auto hidden = juce::Rectangle<int> (rateRow.getX(), rateRow.getY(),
+                                                    rateRow.getWidth(), 0);
+                envFollowGainLabels[lfo] .setBounds (hidden);
+                envFollowGainSliders[lfo].setBounds (hidden);
+            }
+
             // Still set AHD slider bounds (hidden, but bounds need to
             // be sane so they don't land at 0,0,0,0 if shape flips).
             auto hidden = juce::Rectangle<int> (rateRow.getX(), rateRow.getY(),
@@ -5919,12 +6744,14 @@ void LoopSaboteurEditor::ModPage::resized()
             makeRow (holdLabels[lfo],   holdSliders[lfo]);
             makeRow (decayLabels[lfo],  decaySliders[lfo]);
 
-            // Hide the rate row by parking it off-layout.
+            // Hide the rate row and gain slider by parking them off-layout.
             auto hidden = juce::Rectangle<int> (panelBounds.getX(),
                                                 panelBounds.getY(), 0, 0);
             rateLabels[lfo].setBounds (hidden);
             rateBoxes[lfo] .setBounds (hidden);
             syncButtons[lfo].setBounds (hidden);
+            envFollowGainLabels[lfo] .setBounds (hidden);
+            envFollowGainSliders[lfo].setBounds (hidden);
         }
 
         // v0.42.3 — Depth / Target / Retrigger all go INLINE in env mode
@@ -5998,8 +6825,8 @@ void LoopSaboteurEditor::ModPage::setupLfoControls()
         return;
 
     // v0.34 — shape list must match LoopSaboteurProcessor::LfoShape order.
-    static const char* shapeNames[] = { "Sine", "Triangle", "Saw", "Square", "S&H", "Env AHD" };
-    constexpr int kNumShapeItems = 6;
+    static const char* shapeNames[] = { "Sine", "Triangle", "Saw", "Square", "S&H", "Env AHD", "Env Follow" };
+    constexpr int kNumShapeItems = 7;
     // v0.33 — mirrors kLfoDivisionChoices in PluginProcessor.cpp. Index 0 = Off.
     // v0.37 — FREE mode uses a parallel Hz table; the rate combo is
     // repopulated on the fly when the sync toggle flips. See
@@ -6169,6 +6996,28 @@ void LoopSaboteurEditor::ModPage::setupLfoControls()
                         [this, lfo] (float v) { if (proc) proc->setLfoHoldMs   (currentActTab, lfo, v); previews[lfo].repaint(); });
         setupEnvSlider (decaySliders[lfo],  decayLabels[lfo],  "D", 0.1f, 2000.0f, 200.0f,
                         [this, lfo] (float v) { if (proc) proc->setLfoDecayMs  (currentActTab, lfo, v); previews[lfo].repaint(); });
+
+        // v0.50 — Envelope follower sensitivity slider (follow-only).
+        envFollowGainLabels[lfo].setText ("Sensitivity:", juce::dontSendNotification);
+        envFollowGainLabels[lfo].setJustificationType (juce::Justification::centredLeft);
+        envFollowGainLabels[lfo].setColour (juce::Label::textColourId, juce::Colour (0xffebebf0));
+        addAndMakeVisible (envFollowGainLabels[lfo]);
+
+        envFollowGainSliders[lfo].setRange (1.0, 10.0, 0.1);
+        envFollowGainSliders[lfo].setSliderStyle (juce::Slider::LinearHorizontal);
+        envFollowGainSliders[lfo].setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
+        envFollowGainSliders[lfo].setDoubleClickReturnValue (true, 1.0);
+        envFollowGainSliders[lfo].setColour (juce::Slider::trackColourId,      juce::Colour (0xffff5a3c));
+        envFollowGainSliders[lfo].setColour (juce::Slider::backgroundColourId, juce::Colour (0xff2a2a2a));
+        envFollowGainSliders[lfo].setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xffffffff));
+        envFollowGainSliders[lfo].setColour (juce::Slider::textBoxBackgroundColourId, juce::Colour (0x00000000));
+        envFollowGainSliders[lfo].setColour (juce::Slider::textBoxOutlineColourId,    juce::Colour (0x00000000));
+        envFollowGainSliders[lfo].onValueChange = [this, lfo]
+        {
+            if (proc)
+                proc->setLfoEnvFollowGain (currentActTab, lfo, (float) envFollowGainSliders[lfo].getValue());
+        };
+        addAndMakeVisible (envFollowGainSliders[lfo]);
 
         // v0.34 — Trigger combo (env only).
         // v0.42.2 — explicit "Retrigger Mode:" label prefix, matching the
@@ -6370,6 +7219,9 @@ void LoopSaboteurEditor::ModPage::updateFromProcessor()
         decaySliders[lfo] .setValue ((double) proc->getLfoDecayMs  (currentActTab, lfo), juce::dontSendNotification);
         trigBoxes[lfo].setSelectedItemIndex (proc->getLfoTrigMode (currentActTab, lfo), juce::dontSendNotification);
 
+        // v0.50 — envelope follower sensitivity gain.
+        envFollowGainSliders[lfo].setValue ((double) proc->getLfoEnvFollowGain (currentActTab, lfo), juce::dontSendNotification);
+
         // v0.38 — cross-mod controls.
         const int crossIdx = proc->getLfoCrossTarget (currentActTab, lfo);
         crossTargetBoxes[lfo].setSelectedItemIndex (crossIdx + 1, juce::dontSendNotification);
@@ -6419,12 +7271,18 @@ void LoopSaboteurEditor::ModPage::applyShapeVisibility (int lfoIdx)
     if (lfoIdx < 0 || lfoIdx >= 4) return;
 
     const int shape = shapeBoxes[lfoIdx].getSelectedItemIndex();
-    const bool isEnv = (shape == (int) LoopSaboteurProcessor::kLfoEnvAHD);
+    const bool isEnv    = (shape == (int) LoopSaboteurProcessor::kLfoEnvAHD);
+    const bool isFollow = (shape == (int) LoopSaboteurProcessor::kLfoEnvFollow);
 
-    // LFO-only controls.
-    rateLabels[lfoIdx]  .setVisible (! isEnv);
-    rateBoxes[lfoIdx]   .setVisible (! isEnv);
-    syncButtons[lfoIdx] .setVisible (! isEnv);
+    // LFO + Follow: show rate/sync row.  Env: hide them.
+    const bool showRate = (! isEnv);
+    rateLabels[lfoIdx]  .setVisible (showRate);
+    rateBoxes[lfoIdx]   .setVisible (showRate);
+    syncButtons[lfoIdx] .setVisible (showRate && ! isFollow);  // follow doesn't need sync
+
+    // v0.5.0 — relabel rate row for envelope follower.
+    rateLabels[lfoIdx].setText (isFollow ? "Smoothing:" : "Rate:",
+                                juce::dontSendNotification);
 
     // Envelope-only controls.
     attackLabels[lfoIdx] .setVisible (isEnv);
@@ -6435,6 +7293,10 @@ void LoopSaboteurEditor::ModPage::applyShapeVisibility (int lfoIdx)
     decaySliders[lfoIdx] .setVisible (isEnv);
     trigLabels[lfoIdx]   .setVisible (isEnv);
     trigBoxes[lfoIdx]    .setVisible (isEnv);
+
+    // v0.50 — Envelope follower sensitivity slider (follow-only).
+    envFollowGainLabels[lfoIdx] .setVisible (isFollow);
+    envFollowGainSliders[lfoIdx].setVisible (isFollow);
 }
 
 void LoopSaboteurEditor::ModPage::applyStencilLookAndFeel (juce::LookAndFeel* laf)

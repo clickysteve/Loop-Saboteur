@@ -645,14 +645,26 @@ LoopSaboteurProcessor::createParameterLayout()
             .withStringFromValueFunction (pctString)
             .withValueFromStringFunction (pctValue)));
 
-    // GATE — rhythmic amplitude gate LFO. 0 = off, 1 = fully choppy
-    // tremolo slammed to zero on every dip. Adds a vent-valve pulse.
+    // SHAPE — bipolar transient control (v0.5.0, was GATE).
+    // Centre (0) = bypass. Left (negative) = Soft (attack softening,
+    // LPG-style decay). Right (positive) = Snappy (transient emphasis,
+    // fast attack boost). Replaces the old Gate's 0..1 LPG-only range
+    // with a wider creative palette.
     layout.add (std::make_unique<APF>(
-        juce::ParameterID { kParamGate, 1 }, "Gate",
-        NR (0.0f, 1.0f, 0.001f), 0.0f,
+        juce::ParameterID { kParamGate, 1 }, "Shape",
+        NR (-1.0f, 1.0f, 0.001f), 0.0f,
         juce::AudioParameterFloatAttributes()
-            .withStringFromValueFunction (pctString)
-            .withValueFromStringFunction (pctValue)));
+            .withStringFromValueFunction ([] (float v, int) -> juce::String
+            {
+                if (std::abs (v) < 0.005f) return "0%";
+                const int pct = juce::roundToInt (v * 100.0f);
+                return (v < 0.0f ? juce::String (pct) + "% Soft"
+                                 : "+" + juce::String (pct) + "% Snappy");
+            })
+            .withValueFromStringFunction ([] (const juce::String& s) -> float
+            {
+                return s.getFloatValue() * 0.01f;
+            })));
 
     // SMEAR — short delay line with feedback the voice bleeds into.
     // Wet blur that makes chops sound "glued" and haunted. At max
@@ -993,6 +1005,10 @@ LoopSaboteurProcessor::LoopSaboteurProcessor()
     // The editor rebuilds its menu from this list each time it's opened.
     rescanUserPresets();
 
+    // v0.7.0 — load saved UI defaults (tooltips, page-follow, etc.)
+    // so new instances start with the user's preferred settings.
+    loadGlobalDefaults();
+
     // v0.33 — per-LFO default rates. All four LFOs default to Off (rateIdx 0)
     // is actually what the audio engine expects now, BUT giving each LFO a
     // different sensible default rate makes the MOD page instantly legible
@@ -1083,7 +1099,7 @@ void LoopSaboteurProcessor::parameterChanged (const juce::String& paramId, float
     else if (paramId == kParamShimmer)   s.shimmer      .store (juce::jlimit (0.0f, 1.0f,  newValue));
     else if (paramId == kParamRes)       s.res          .store (juce::jlimit (0.0f, 0.98f, newValue));
     else if (paramId == kParamFold)      s.fold         .store (juce::jlimit (0.0f, 1.0f,  newValue));
-    else if (paramId == kParamGate)      s.gate         .store (juce::jlimit (0.0f, 1.0f,  newValue));
+    else if (paramId == kParamGate)      s.gate         .store (juce::jlimit (-1.0f, 1.0f,  newValue));
     else if (paramId == kParamSmear)     s.smear        .store (juce::jlimit (0.0f, 1.0f,  newValue));
     else if (paramId == kParamStutter)   s.stutter      .store (juce::jlimit (0.0f, 1.0f,  newValue));
     else if (paramId == kParamChaos)     s.chaos        .store (juce::jlimit (0.0f, 1.0f,  newValue));
@@ -1092,7 +1108,10 @@ void LoopSaboteurProcessor::parameterChanged (const juce::String& paramId, float
 
     // BUG 1 fix: user edited a knob, so the scene is no longer matching a factory preset
     if (!applyingPreset)
+    {
         scenePresetIdx[sel].store (-1);
+        s.cageSilence.store (false);   // v0.7.0 — tweaking any knob exits Cage mode
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -1133,6 +1152,25 @@ void LoopSaboteurProcessor::initSceneDefaults()
         s.smear        .store (0.0f);
         s.stutter      .store (0.0f);
         s.chaos        .store (0.0f);
+
+        // v0.5.1 — per-Act Character mode selections.
+        s.driveType      .store (0);
+        s.foldTopology   .store (0);
+        s.shimmerOctave  .store (0);
+        s.smearCharacter .store (0);
+        s.stutterWindow  .store (0);
+        s.varispeedCurve .store (0);
+        s.slideCurve     .store (0);
+        s.reverseMode    .store (0);
+        s.tapeMode       .store (0);
+        s.ringModWave    .store (0);
+        s.chaosDistribution .store (0);
+        s.feedbackCharacter .store (0);
+        s.stretchMode    .store (0);
+        s.judderShape    .store (0);
+        s.lookbackBehaviour .store (0);
+        s.decayCurve    .store (0);
+        s.cageSilence   .store (false);  // v0.7.0
     }
 
     for (auto& s : sceneStored)
@@ -1206,7 +1244,7 @@ void LoopSaboteurProcessor::storeKnobsAsScene (int sceneIdx)
     s.shimmer      .store (juce::jlimit (0.0f, 1.0f,  pShimmer ->load()));
     s.res          .store (juce::jlimit (0.0f, 0.98f, pRes     ->load()));
     s.fold         .store (juce::jlimit (0.0f, 1.0f,  pFold    ->load()));
-    s.gate         .store (juce::jlimit (0.0f, 1.0f,  pGate    ->load()));
+    s.gate         .store (juce::jlimit (-1.0f, 1.0f,  pGate    ->load()));
     s.smear        .store (juce::jlimit (0.0f, 1.0f,  pSmear   ->load()));
     s.stutter      .store (juce::jlimit (0.0f, 1.0f,  pStutter ->load()));
     s.chaos        .store (juce::jlimit (0.0f, 1.0f,  pChaos   ->load()));
@@ -1344,7 +1382,8 @@ juce::File LoopSaboteurProcessor::getUserPresetsDir()
 }
 
 bool LoopSaboteurProcessor::saveCurrentActAsUserPreset (int sceneIdx,
-                                                       const juce::String& displayName)
+                                                       const juce::String& displayName,
+                                                       const juce::String& category)
 {
     if (sceneIdx < 0 || sceneIdx >= kNumScenes)    return false;
     const auto trimmed = displayName.trim();
@@ -1358,7 +1397,16 @@ bool LoopSaboteurProcessor::saveCurrentActAsUserPreset (int sceneIdx,
     // over the filename when present.
     xml->setAttribute ("userName", trimmed);
 
-    const auto dir    = getUserPresetsDir();
+    // v0.7.0 — if a category is provided, save into a sub-folder.
+    auto dir = getUserPresetsDir();
+    const auto catTrimmed = category.trim();
+    if (catTrimmed.isNotEmpty())
+    {
+        dir = dir.getChildFile (juce::File::createLegalFileName (catTrimmed));
+        if (! dir.exists())
+            dir.createDirectory();
+    }
+
     const auto safe   = juce::File::createLegalFileName (trimmed);
     auto       target = dir.getChildFile (safe + ".lpsbact");
     // Avoid clobbering an existing file by appending "-N".
@@ -1376,7 +1424,8 @@ void LoopSaboteurProcessor::rescanUserPresets()
 {
     const auto dir = getUserPresetsDir();
     juce::Array<juce::File> files;
-    dir.findChildFiles (files, juce::File::findFiles, /*recursive*/ false, "*.lpsbact");
+    // v0.7.0 — scan recursively so sub-folders become user categories.
+    dir.findChildFiles (files, juce::File::findFiles, /*recursive*/ true, "*.lpsbact");
 
     // Sort by display name (natural order) so the menu is stable.
     std::vector<UserPresetEntry> fresh;
@@ -1390,11 +1439,21 @@ void LoopSaboteurProcessor::rescanUserPresets()
                                               f.getFileNameWithoutExtension());
         else
             e.name = f.getFileNameWithoutExtension();
+        // v0.7.0 — derive category from the sub-folder name relative to
+        // the UserPresets root. Files in the root get an empty category.
+        const auto parent = f.getParentDirectory();
+        if (parent != dir)
+            e.category = parent.getFileName();
         fresh.push_back (std::move (e));
     }
     std::sort (fresh.begin(), fresh.end(),
                [] (const UserPresetEntry& a, const UserPresetEntry& b)
-               { return a.name.compareNatural (b.name) < 0; });
+               {
+                   // Group by category first, then by name within category.
+                   const int catCmp = a.category.compareNatural (b.category);
+                   if (catCmp != 0) return catCmp < 0;
+                   return a.name.compareNatural (b.name) < 0;
+               });
 
     const juce::ScopedLock sl (userPresetsLock);
     userPresets = std::move (fresh);
@@ -1411,6 +1470,92 @@ juce::String LoopSaboteurProcessor::getUserPresetName (int idx) const
     const juce::ScopedLock sl (userPresetsLock);
     if (idx < 0 || idx >= (int) userPresets.size()) return {};
     return userPresets[(size_t) idx].name;
+}
+
+juce::String LoopSaboteurProcessor::getUserPresetCategory (int idx) const
+{
+    const juce::ScopedLock sl (userPresetsLock);
+    if (idx < 0 || idx >= (int) userPresets.size()) return {};
+    return userPresets[(size_t) idx].category;
+}
+
+juce::StringArray LoopSaboteurProcessor::getUserPresetCategories() const
+{
+    const juce::ScopedLock sl (userPresetsLock);
+    juce::StringArray cats;
+    for (const auto& e : userPresets)
+        if (e.category.isNotEmpty() && ! cats.contains (e.category))
+            cats.add (e.category);
+    cats.sort (true);
+    return cats;
+}
+
+bool LoopSaboteurProcessor::renameUserPresetCategory (const juce::String& oldName,
+                                                      const juce::String& newName)
+{
+    if (oldName.isEmpty() || newName.trim().isEmpty()) return false;
+    const auto dir = getUserPresetsDir();
+    auto oldDir = dir.getChildFile (juce::File::createLegalFileName (oldName));
+    if (! oldDir.isDirectory()) return false;
+    auto newDir = dir.getChildFile (juce::File::createLegalFileName (newName.trim()));
+    if (newDir.exists()) return false;  // target already exists
+    const bool ok = oldDir.moveFileTo (newDir);
+    if (ok) rescanUserPresets();
+    return ok;
+}
+
+bool LoopSaboteurProcessor::deleteUserPresetCategory (const juce::String& categoryName)
+{
+    if (categoryName.isEmpty()) return false;
+    const auto dir = getUserPresetsDir();
+    auto catDir = dir.getChildFile (juce::File::createLegalFileName (categoryName));
+    if (! catDir.isDirectory()) return false;
+
+    // Move all .lpsbact files to the root, then remove the empty folder.
+    juce::Array<juce::File> files;
+    catDir.findChildFiles (files, juce::File::findFiles, false, "*.lpsbact");
+    for (const auto& f : files)
+        f.moveFileTo (dir.getChildFile (f.getFileName()));
+    catDir.deleteRecursively (false);
+    rescanUserPresets();
+    return true;
+}
+
+// v0.7.0 — persist UI preferences to a shared config file so every
+// new plugin instance starts with the user's preferred settings.
+void LoopSaboteurProcessor::saveGlobalDefaults()
+{
+    auto base = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                    .getChildFile ("LoopSaboteur");
+    if (! base.exists()) base.createDirectory();
+
+    juce::XmlElement xml ("LpsbDefaults");
+    xml.setAttribute ("tooltips",       tooltipsEnabled.load());
+    xml.setAttribute ("waveform",       waveformVisible.load());
+    xml.setAttribute ("pageFollow",     pageFollowsPlayhead.load());
+    xml.setAttribute ("uiScale",        (double) uiScale.load());
+    xml.setAttribute ("preserveLfos",   preserveLfosOnClear.load());
+    xml.setAttribute ("autoFollow",     autoFollowLength.load());
+
+    xml.writeTo (base.getChildFile ("defaults.xml"), juce::XmlElement::TextFormat());
+}
+
+void LoopSaboteurProcessor::loadGlobalDefaults()
+{
+    auto file = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                    .getChildFile ("LoopSaboteur")
+                    .getChildFile ("defaults.xml");
+    if (! file.existsAsFile()) return;
+
+    auto xml = juce::XmlDocument::parse (file);
+    if (xml == nullptr || xml->getTagName() != "LpsbDefaults") return;
+
+    tooltipsEnabled     .store (xml->getBoolAttribute ("tooltips",     true));
+    waveformVisible     .store (xml->getBoolAttribute ("waveform",     true));
+    pageFollowsPlayhead .store (xml->getBoolAttribute ("pageFollow",   false));
+    uiScale             .store ((float) xml->getDoubleAttribute ("uiScale", 1.0));
+    preserveLfosOnClear .store (xml->getBoolAttribute ("preserveLfos", false));
+    autoFollowLength    .store (xml->getBoolAttribute ("autoFollow",   false));
 }
 
 juce::File LoopSaboteurProcessor::getUserPresetFile (int idx) const
@@ -1700,7 +1845,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // it bite; Feedback 46% keeps the loop self-feeding without
     // runaway (the v0.13 output soft-limiter has your back if you
     // push further). A whisper of Flutter (5%) for a tape-y wobble.
-    { "Drums", "Jungle Stretch",
+    { "Presets", "Jungle Stretch",
       2, 1, 3, 1, 3,
       0.0f, 0.0f, 0.58f, 0.0f, 0.25f, 0.0f, 1.0f, 1.0f,
       0.35f, 0.5f, 0.46f, 0.05f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1714,25 +1859,10 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // without destroying it, and Smear at 21% bleeds the tail into
     // the next hit for a dreamy, smudged quality. Full Mix / full
     // Chance so it takes over completely.
-    { "Atmosphere", "2am Trippy",
+    { "Presets", "2am Trippy",
       2, 4, 3, 10, 9,
       0.0f, -2.0f, 0.4f, 0.0f, 0.13f, 0.0f, 1.0f, 1.0f,
       0.24f, 0.5f, 0.3f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-      0.0f, 0.0f, 0.07f, 0.0f, 0.21f, 0.0f, 0.0f },
-
-    // "Lost at Sea" — a long, slow dubby drift. 1/16 chops with a 1/8
-    // lookback for stretched grab windows, Judder 10 at 1/4 rolls out
-    // a deep rumbling retrigger cascade. Slide -2 pulls each burst a
-    // step down for that seasick lurch, Decay 40% lets tails linger,
-    // Feedback 23% pushes the loop into gentle self-feeding. A kiss of
-    // Fold (7%) and Smear (21%) smudge the texture; Drive 24% gives
-    // it body without tipping into distortion. Bits at 15-bit is the
-    // most subtle shade of lo-fi dust. Tone left flat so the mood
-    // stays submerged rather than bright and aerial.
-    { "Pads", "Lost at Sea",
-      2, 4, 3, 10, 9,
-      0.0f, -2.0f, 0.4f, 0.0f, 0.0714f, 0.0f, 1.0f, 1.0f,
-      0.24f, 0.5f, 0.23f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
       0.0f, 0.0f, 0.07f, 0.0f, 0.21f, 0.0f, 0.0f },
 
     // "Rubber Ducky" — pitched up +5 st for a chipmunk / rubber-band
@@ -1743,25 +1873,16 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // cranked to 91% with Res 26% gives it that squeaky, plasticky
     // sheen. Fold at 8% and Smear at 57% smudge the edges into a
     // gooey, cartoonish texture. Full Mix / full Chance.
-    { "Experimental", "Rubber Ducky",
+    { "Presets", "Rubber Ducky",
       0, 1, 3, 11, 9,
       5.0f, 0.0f, 0.56f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f,
       0.0f, 0.335f, 0.37f, 0.08f, 0.0f, 0.0f, 0.0f, 0.0f,
       0.91f, 0.26f, 0.08f, 0.0f, 0.57f, 0.0f, 0.0f },
 
-    // "Mangled" — gate+fold+chaos for broken-transmission vibes. For
-    // when you've hit RANDOM EVERYTHING too many times and need a
-    // shortcut to "properly ruined".
-    { "Glitch", "Mangled",
-      2, 3, 3, 3, 4,
-      -5.0f, 0.5f, 0.7f, 0.1f, 0.55f, 0.0f, 0.85f, 0.7f,
-      0.65f, 0.35f, 0.45f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-      0.15f, 0.6f, 0.65f, 0.75f, 0.35f, 0.0f, 0.7f },
-
     // "Whip It" — snappy 1/4-note slices at 4x rate with light pitch
     // shimmer and moderate smear. Feedback and tape give it a loopy,
     // elastic quality that cracks like a whip on transients.
-    { "Experimental", "Whip It",
+    { "Presets", "Whip It",
       5, 5, 6, 15, 4,
       0.33f, -1.12f, 0.35f, 0.19f, 0.16f, 0.0f, 0.78f, 0.79f,
       0.04f, 0.34f, 0.33f, 0.31f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1771,7 +1892,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // and tape flutter for a dark, fluttery, nocturnal texture. Gate
     // at 51% chops the tail while resonance and shimmer add an eerie
     // sheen.
-    { "Pads", "Night Owl",
+    { "Presets", "Night Owl",
       5, 5, 6, 17, 4,
       11.75f, -1.55f, 0.69f, 0.04f, 0.06f, 0.0f, 0.59f, 0.89f,
       0.88f, 0.075f, 0.33f, 0.57f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1781,7 +1902,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // heavy drive, and max mix. 32 judders at 1/128 with 1/32 division
     // create a dense, robotic retrigger wall. Tape flutter and smear
     // add just enough movement to keep it alive.
-    { "Glitch", "Digital After All",
+    { "Presets", "Digital After All",
       0, 1, 3, 32, 0,
       -7.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f,
       0.43f, 0.5f, 0.07f, 0.25f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1791,7 +1912,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // for a deep, swooping descent. 1 bar lookback with 1/16 division
     // and 15 judders at 1/16 creates a stuttery, lo-fi crooner vibe.
     // High feedback (58%) with a touch of fold and crush.
-    { "Lo-Fi", "Trash Can Sinatra",
+    { "Presets", "Trash Can Sinatra",
       2, 7, 3, 15, 5,
       -7.0f, -7.0f, 0.42f, 0.0f, 0.10f, 0.0f, 1.0f, 1.0f,
       0.06f, 0.5f, 0.58f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1801,7 +1922,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // 1/16 for a tight, machine-gun snare fill. No tonal shaping, no
     // pitch shift, 74% decay for a natural roll fade. A touch of fold
     // (18%) adds grit.
-    { "Drums", "Snare Roll",
+    { "Presets", "Snare Roll",
       0, 3, 3, 13, 5,
       0.0f, 0.0f, 0.74f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f,
       0.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1810,7 +1931,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // "Pad Stabber" — pitched up +7 st with full reverse and 25% crush
     // for choppy, bitty pad stabs. 8 judders at 1/32 with 1/16 division
     // give a tight rhythmic burst. Drive and shimmer add warmth.
-    { "Pads", "Pad Stabber",
+    { "Presets", "Pad Stabber",
       2, 1, 3, 8, 2,
       7.0f, 0.0f, 0.66f, 1.0f, 0.25f, 0.0f, 1.0f, 0.54f,
       0.21f, 0.5f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1820,7 +1941,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // judders at 1/32 for a demonic, smeared-out organ drone. Tape at
     // 30% and smear at 69% give it a queasy, warped quality. Fold adds
     // grit.
-    { "Experimental", "Satan's Organ",
+    { "Presets", "Satan's Organ",
       2, 3, 2, 13, 3,
       0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.59f,
       0.13f, 0.27f, 0.29f, 0.30f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -1838,7 +1959,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // lend it just enough grain to sit in a mix. Mix parked at 38% so it
     // colours the source rather than taking over — the title is a Scots
     // "aye" of cautious assent, and the preset plays the same role.
-    { "Pads", "aye, but gently",
+    { "Presets", "aye, but gently",
       /* div,look,rate,jud,judDiv */  2, 3, 3, 1, 3,
       /* pitch, slide, decay, rev, crunch, crushR, mix, chance */
          -7.0f, 6.0f, 0.871f, 1.0f, 0.006f, 0.107f, 0.385f, 1.0f,
@@ -1874,22 +1995,52 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
 
     // "Roll Down" — pitched-down ratcheting roll with 23 judders at 1/16,
     // heavy feedback for a descending machine-gun snare.
-    { "Drums", "Roll Down",
+    { "Presets", "Roll Down",
       2, 3, 3, 23, 5,
       -3.0f, -5.0f, 0.70f, 0.0f, 0.09f, 0.0f, 1.0f, 1.0f,
       0.0f, 0.5f, 0.54f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
       0.0f, 0.0f, 0.18f, 0.0f, 0.0f, 0.0f, 0.0f },
 
-    // "Cage 4'33\"" — John Cage's 1952 silent work as a preset: Mix at 0,
-    // Chance at 0, nothing fires, wet bus is silent. Lives in the
-    // Experimental drawer rather than as a default because a fresh
-    // instance needs to actually make noise — otherwise workflow grinds
-    // to a halt while the user wonders why the plugin seems dead.
-    { "Experimental", "Cage 4'33\"",
+    // "Cage 4'33\"" — John Cage's 1952 silent work as a preset.
+    // v0.7.0 — now a true silence easter egg: Mix at 100% wet, Chance
+    // at 0 so no voice fires, and the cageSilence flag (set in
+    // applyActPreset by name-match) zeroes the output buffer. Result:
+    // absolute silence, just like the original piece.
+    { "Presets", "Cage 4'33\"",
       2, 3, 3, 1, 3,
-      0.0f, 0.0f, 0.8f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 0.8f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
       0.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
       0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f },
+
+    // "A Little Crispy" — light bit-crush texture with a musical gate.
+    // 1/32 division, 1/16 lookback at 1x rate, single judder at 1/32.
+    // PAULA crunch (23%) with decimation (25%) adds gritty aliasing,
+    // Tone bright (69%), and a whisper of Gate (8%) trims tails.
+    // Mix at 64% blends the crud under the source. Quantised lookback
+    // keeps slices rhythmically coherent.
+    { "Presets", "A Little Crispy",
+      /* div,look,rate,jud,judDiv */  0, 3, 3, 1, 3,
+      /* pitch, slide, decay, rev, crunch, crushR, mix, chance */
+         0.0f, 0.0f, 0.163f, 0.0f, 0.229f, 0.248f, 0.644f, 1.0f,
+      /* drive, tone, feedback, tape, ringMod, varispeed, stereo, stretch */
+         0.0f, 0.694f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+      /* shimmer, res, fold, gate, smear, stutter, chaos */
+         0.0f, 0.0f, 0.0f, 0.083f, 0.0f, 0.0f, 0.0f,
+      /* crushAll */ false, /* fxOnDry */ false, false, false, false,
+      /* lfos — all unassigned, matching the .lpsbact (all targets = -1) */
+      {
+          { 0, 8, 1.0f, -1, true, 5.0f, 0.0f, 200.0f, 1, -1, 1.0f },
+          { 0, 9, 1.0f, -1, true, 5.0f, 0.0f, 200.0f, 1, -1, 1.0f },
+          { 0, 10, 1.0f, -1, true, 5.0f, 0.0f, 200.0f, 1, -1, 1.0f },
+          { 0, 11, 1.0f, -1, true, 5.0f, 0.0f, 200.0f, 1, -1, 1.0f }
+      },
+      /* ENGINE: stage, mix, intensity, interp, crushAA, crushMu, filter, splitMode, splitHz */
+         0, 0.0f, 0.5f, 0, /*crushAA*/ false, /*crushMu*/ false, 0, 0, 2600.0f,
+      /* CHARACTER: stereoMode, ringModQuant, driveType..decayCurve */
+         0, false, 0, 0, 0, 0, 0, 0, 0,
+         /*reverseMode*/ 1, /*tapeMode*/ 1, 0, 0, 0, 0, 0,
+         /*lookbackBehaviour*/ 2, 0
+    },
 
     // v0.38 — "Pretty Machine" — the first preset that actively uses the
     // MOD system. Steve's dialled-in Act: 1/16 slices at 1/2x rate, ~2 st
@@ -1905,7 +2056,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // copied verbatim from Steve's exported .lpsbact. Users who tweak
     // and like their own settings better can re-save via "Save as
     // user preset…".
-    { "Experimental", "Pretty Machine",
+    { "Presets", "Pretty Machine",
       /* div,look,rate,jud,judDiv */  2, 3, 2, 1, 3,
       /* pitch, slide, decay, rev, crunch, crushR, mix, chance */
          1.9999994f, -1.0000002f, 0.8000000f, 0.0f, 0.0f, 0.0f, 0.4960000f, 1.0f,
@@ -1957,7 +2108,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // (4%) and Varispeed (3%) keeps it alive without wobbling. Tone
     // tilted slightly bright, Mix at 64% so it wraps around the source
     // rather than drowning it. No LFOs — what you dial is what you get.
-    { "Atmosphere", "Seek Out Space",
+    { "Presets", "Seek Out Space",
       /* div,look,rate,jud,judDiv */  2, 2, 3, 9, 9,
       /* pitch, slide, decay, rev, crunch, crushR, mix, chance */
          0.0f, 0.0f, 0.80f, 0.0f, 0.0f, 0.0f, 0.64f, 1.0f,
@@ -1973,7 +2124,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // Tone rolled way dark (69%), Tape at 43% adds heavy flutter, and
     // a touch of Stretch (13%) smears the slices. Shimmer at 32% and
     // Varispeed 9% add subtle movement. Full mix, full chance.
-    { "Lo-Fi", "Cup Fungus",
+    { "Presets", "Cup Fungus",
       /* div,look,rate,jud,judDiv */  2, 3, 3, 1, 3,
       /* pitch, slide, decay, rev, crunch, crushR, mix, chance */
          0.0f, 0.0f, 0.80f, 0.0f, 0.571f, 0.206f, 1.0f, 1.0f,
@@ -1992,7 +2143,7 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
     // VARISPEED (56%) adds a drunken speed-drift to each slice, and
     // STUTTER (55%) micro-loops the tail for a buzzy digital decay. BITS
     // at 13-bit dusts the surface with lo-fi grit. Full Mix / full Chance.
-    { "Drums", "Pattern Gap Handler",
+    { "Presets", "Pattern Gap Handler",
       /* div,look,rate,jud,judDiv */  5, 1, 1, 1, 1,
       /* pitch, slide, decay, rev, crunch, crushR, mix, chance */
          0.0f, 0.0f, 0.58f, 0.0f, 0.214f, 0.0f, 1.0f, 1.0f,
@@ -2000,6 +2151,36 @@ static const LoopSaboteurProcessor::ActPreset kActPresets[] =
          0.35f, 0.5f, 0.0f, 0.0f, 0.0f, 0.56f, 0.0f, 0.0f,
       /* shimmer, res, fold, gate, smear, stutter, chaos */
          0.68f, 0.0f, 0.54f, 0.0f, 0.0f, 0.55f, 0.0f },
+
+    // "Loopbreaker" — Steve's signature live preset. 1/8 triplet division
+    // with 1/4 lookback gives a syncopated chop-and-grab feel. Diode drive
+    // (driveType=2) into triangle fold (foldTopology=1) for crunchy
+    // harmonics. Tape wow-only mode at 16% adds drift. Beat-quantised
+    // lookback (lookbackBehaviour=2) keeps slices rhythmically coherent.
+    // Two AHD envelopes (MOD 1 + 3) trigger on active steps with a sine
+    // LFO cross-modulating MOD 1's depth for evolving movement.
+    { "Presets", "Loopbreaker",
+      /* div,look,rate,jud,judDiv */  6, 5, 3, 1, 5,
+      /* pitch, slide, decay, rev, crunch, crushR, mix, chance */
+         0.0f, 0.0f, 0.8f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f,
+      /* drive, tone, feedback, tape, ringMod, varispeed, stereo, stretch */
+         0.304f, 0.5f, 0.0f, 0.16f, 0.0f, 0.0f, 0.134f, 0.0f,
+      /* shimmer, res, fold, gate, smear, stutter, chaos */
+         0.0f, 0.0f, 0.475f, 0.0f, 0.0f, 0.0f, 0.099f,
+      /* crushAll, fxOnDryDrive, fxOnDryTone, fxOnDryRingMod, fxOnDryFold */
+         true, false, false, false, false,
+      /* MODs: shape, rate, depth, target, sync, aMs, hMs, dMs, trig, xTgt, xDep */
+      { { 3, 5, 1.0f, 1, true, 5.0f, 0.0f, 200.0f, 1, -1, 1.0f },
+        { 0, 1, 1.0f, 1, true, 5.0f, 0.0f, 200.0f, 1,  0, 1.0f },
+        { 3, 8, 0.47f, 19, true, 5.0f, 0.0f, 200.0f, 1, -1, 1.0f },
+        { 0, 11, 1.0f, -1, true, 5.0f, 0.0f, 200.0f, 1, -1, 1.0f } },
+      /* ENGINE: stage, mix, intensity, interp, crushAA, crushMu, filter, splitMode, splitHz */
+         0, 0.0f, 0.5f, 0, true, true, 0, 0, 500.0f,
+      /* CHARACTER: stereoMode, ringModQuant, driveType..decayCurve */
+         0, false, /*driveType*/ 2, /*foldTopology*/ 1, 0, 0, 0, 0, 0,
+         0, /*tapeMode*/ 1, 0, 0, 0, 0, 0,
+         /*lookbackBehaviour*/ 2, 0
+    },
 };
 
 int LoopSaboteurProcessor::getNumActPresets() noexcept
@@ -2059,6 +2240,41 @@ void LoopSaboteurProcessor::applyActPreset (int sceneIdx, int presetIdx)
     s.fxOnDryRingMod.store (p.fxOnDryRingMod);
     s.fxOnDryFold   .store (p.fxOnDryFold);
 
+    // v0.7.0 — Cage 4'33" easter egg: detect by name and set flag
+    // so the output path zeroes all audio for true silence.
+    s.cageSilence.store (juce::String (p.name) == "Cage 4'33\"");
+
+    // v0.7.0 — ENGINE settings carried by the preset.
+    s.engineStage      .store (p.engineStage);
+    s.engineMix        .store (p.engineMix);
+    s.engineIntensity  .store (p.engineIntensity);
+    s.interpMode    .store (p.interpMode);
+    s.crushAA       .store (p.presetCrushAA);
+    s.crushMu       .store (p.presetCrushMu);
+    s.filterMode    .store (p.filterMode);
+    s.freqSplitMode .store (p.freqSplitMode);
+    s.freqSplitHz   .store (p.freqSplitHz);
+
+    // v0.7.0 — CHARACTER settings carried by the preset.
+    s.stereoMode        .store (p.stereoMode);
+    s.ringModQuant      .store (p.ringModQuant);
+    s.driveType         .store (p.driveType);
+    s.foldTopology      .store (p.foldTopology);
+    s.shimmerOctave     .store (p.shimmerOctave);
+    s.smearCharacter    .store (p.smearCharacter);
+    s.stutterWindow     .store (p.stutterWindow);
+    s.varispeedCurve    .store (p.varispeedCurve);
+    s.slideCurve        .store (p.slideCurve);
+    s.reverseMode       .store (p.reverseMode);
+    s.tapeMode          .store (p.tapeMode);
+    s.ringModWave       .store (p.ringModWave);
+    s.chaosDistribution .store (p.chaosDistribution);
+    s.feedbackCharacter .store (p.feedbackCharacter);
+    s.stretchMode       .store (p.stretchMode);
+    s.judderShape       .store (p.judderShape);
+    s.lookbackBehaviour .store (p.lookbackBehaviour);
+    s.decayCurve        .store (p.decayCurve);
+
     // v0.38 — also apply the 4 MODs carried by this preset. Reset first
     // so a preset that uses fewer than 4 MODs actively wipes any stale
     // modulation that the slot had. If the preset is one of the old
@@ -2080,6 +2296,7 @@ void LoopSaboteurProcessor::applyActPreset (int sceneIdx, int presetIdx)
         lfo.trigMode      .store (pl.trigMode);
         lfo.crossTargetLfo.store (pl.crossTargetLfo);
         lfo.crossDepth    .store (pl.crossDepth);
+        lfo.envFollowGain .store (pl.envFollowGain);
     }
 
     // Mark the slot as populated so Randomise/patterns include it in
@@ -2590,6 +2807,20 @@ int LoopSaboteurProcessor::getLfoTrigMode (int sceneIdx, int lfoIdx) const noexc
     return lfos[sceneIdx][lfoIdx].trigMode.load();
 }
 
+void LoopSaboteurProcessor::setLfoEnvFollowGain (int sceneIdx, int lfoIdx, float g)
+{
+    if (sceneIdx < 0 || sceneIdx >= kNumScenes) return;
+    if (lfoIdx < 0 || lfoIdx >= kNumLfosPerAct) return;
+    lfos[sceneIdx][lfoIdx].envFollowGain.store (juce::jlimit (1.0f, 10.0f, g));
+}
+
+float LoopSaboteurProcessor::getLfoEnvFollowGain (int sceneIdx, int lfoIdx) const noexcept
+{
+    if (sceneIdx < 0 || sceneIdx >= kNumScenes) return 1.0f;
+    if (lfoIdx < 0 || lfoIdx >= kNumLfosPerAct) return 1.0f;
+    return lfos[sceneIdx][lfoIdx].envFollowGain.load();
+}
+
 void LoopSaboteurProcessor::setLfoTargetSlot (int sceneIdx, int lfoIdx, int slot)
 {
     if (sceneIdx < 0 || sceneIdx >= kNumScenes) return;
@@ -2645,6 +2876,13 @@ double LoopSaboteurProcessor::getLfoPhase (int sceneIdx, int lfoIdx) const noexc
     if (sceneIdx < 0 || sceneIdx >= kNumScenes) return 0.0;
     if (lfoIdx < 0 || lfoIdx >= kNumLfosPerAct) return 0.0;
     return lfos[sceneIdx][lfoIdx].phase;
+}
+
+float LoopSaboteurProcessor::getLfoOutput (int sceneIdx, int lfoIdx) const noexcept
+{
+    if (sceneIdx < 0 || sceneIdx >= kNumScenes) return 0.0f;
+    if (lfoIdx < 0 || lfoIdx >= kNumLfosPerAct) return 0.0f;
+    return lfos[sceneIdx][lfoIdx].lastOutput;
 }
 
 float LoopSaboteurProcessor::getLfoLastOutput (int sceneIdx, int lfoIdx) const noexcept
@@ -3150,6 +3388,12 @@ float LoopSaboteurProcessor::getPeak (int idx) const noexcept
     return peakRing[idx].load();
 }
 
+float LoopSaboteurProcessor::getSlicePeak (int idx) const noexcept
+{
+    if (idx < 0 || idx >= kSlicePeakRingSize) return 0.0f;
+    return slicePeakRing[idx].load();
+}
+
 void LoopSaboteurProcessor::setSeqLength (int newLength)
 {
     seqLength.store (juce::jlimit (2, kMaxSteps, newLength));
@@ -3214,6 +3458,10 @@ void LoopSaboteurProcessor::prepareToPlay (double sr, int /*samplesPerBlock*/)
     smearWritePos = 0;
     smearFeedAmount = 0.0f;
 
+    // v0.5.0 — reset allpass state for Diffuse smear mode
+    smearApStateL = 0.0f;
+    smearApStateR = 0.0f;
+
     // v0.12 — lookahead delay buffer. Sized to the max lookahead so
     // we never need to reallocate when the user changes the setting.
     // A few extra samples of headroom so we never trip over the
@@ -3260,6 +3508,7 @@ void LoopSaboteurProcessor::prepareToPlay (double sr, int /*samplesPerBlock*/)
             lfos[si][li].envPos   = 0.0;
             lfos[si][li].envValue = 0.0f;
             lfos[si][li].envPending = false;
+            lfos[si][li].envFollowValue = 0.0f;  // v0.6.0
         }
     }
     std::fill (std::begin (lfoModOffset), std::end (lfoModOffset), 0.0f);
@@ -3458,7 +3707,7 @@ void LoopSaboteurProcessor::applyStepLocks (ShapingParams& p, int stepIdx) const
     overlayFloat (kParamShimmer,   p.shimmer,      0.0f, 1.0f);
     overlayFloat (kParamRes,       p.res,          0.0f, 0.98f);
     overlayFloat (kParamFold,      p.fold,         0.0f, 1.0f);
-    overlayFloat (kParamGate,      p.gate,         0.0f, 1.0f);
+    overlayFloat (kParamGate,      p.gate,         -1.0f, 1.0f);
     overlayFloat (kParamSmear,     p.smear,        0.0f, 1.0f);
     overlayFloat (kParamStutter,   p.stutter,      0.0f, 1.0f);
     overlayFloat (kParamChaos,     p.chaos,        0.0f, 1.0f);
@@ -3495,7 +3744,7 @@ LoopSaboteurProcessor::ShapingParams LoopSaboteurProcessor::paramsFromKnobs() co
     p.shimmer       = juce::jlimit (0.0f, 1.0f,  pShimmer ->load());
     p.res           = juce::jlimit (0.0f, 0.98f, pRes     ->load());
     p.fold          = juce::jlimit (0.0f, 1.0f,  pFold    ->load());
-    p.gate          = juce::jlimit (0.0f, 1.0f,  pGate    ->load());
+    p.gate          = juce::jlimit (-1.0f, 1.0f,  pGate    ->load());
     p.smear         = juce::jlimit (0.0f, 1.0f,  pSmear   ->load());
     p.stutter       = juce::jlimit (0.0f, 1.0f,  pStutter ->load());
     p.chaos         = juce::jlimit (0.0f, 1.0f,  pChaos   ->load());
@@ -3510,10 +3759,29 @@ LoopSaboteurProcessor::ShapingParams LoopSaboteurProcessor::paramsFromKnobs() co
         {
             p.engineStage = scenes[idx].engineStage.load();
             p.engineMix   = scenes[idx].engineMix  .load();
-            p.interpMode  = scenes[idx].interpMode .load();
-            p.crushAA     = scenes[idx].crushAA    .load();
-            p.crushMu     = scenes[idx].crushMu    .load();
-            p.crushAll    = scenes[idx].crushAll   .load();
+            p.interpMode    = scenes[idx].interpMode .load();
+            p.crushAA       = scenes[idx].crushAA    .load();
+            p.crushMu       = scenes[idx].crushMu    .load();
+            p.crushAll      = scenes[idx].crushAll   .load();
+            p.filterMode    = scenes[idx].filterMode .load();
+            p.freqSplitMode = scenes[idx].freqSplitMode.load();
+            p.freqSplitHz   = scenes[idx].freqSplitHz .load();
+            p.driveType      = scenes[idx].driveType.load();
+            p.foldTopology   = scenes[idx].foldTopology.load();
+            p.shimmerOctave  = scenes[idx].shimmerOctave.load();
+            p.smearCharacter = scenes[idx].smearCharacter.load();
+            p.stutterWindow  = scenes[idx].stutterWindow.load();
+            p.varispeedCurve = scenes[idx].varispeedCurve.load();
+            p.slideCurve     = scenes[idx].slideCurve.load();
+            p.reverseMode    = scenes[idx].reverseMode.load();
+            p.tapeMode       = scenes[idx].tapeMode.load();
+            p.ringModWave    = scenes[idx].ringModWave.load();
+            p.chaosDistribution = scenes[idx].chaosDistribution.load();
+            p.feedbackCharacter = scenes[idx].feedbackCharacter.load();
+            p.stretchMode    = scenes[idx].stretchMode.load();
+            p.judderShape    = scenes[idx].judderShape.load();
+            p.lookbackBehaviour = scenes[idx].lookbackBehaviour.load();
+            p.decayCurve    = scenes[idx].decayCurve.load();
 
             // v0.42 — per-Act stereo / FX-on-Dry / ring mod quantise.
             p.stereoMode     = juce::jlimit (0, 3, scenes[idx].stereoMode.load());
@@ -3527,10 +3795,29 @@ LoopSaboteurProcessor::ShapingParams LoopSaboteurProcessor::paramsFromKnobs() co
         {
             p.engineStage = outputStage.getMode();
             p.engineMix   = outputStage.getMix();
-            p.interpMode  = interpMode    .load();
-            p.crushAA     = crushAntiAlias.load();
-            p.crushMu     = crushMuLaw    .load();
-            p.crushAll    = crushAllAudio .load();
+            p.interpMode    = interpMode    .load();
+            p.crushAA       = crushAntiAlias.load();
+            p.crushMu       = crushMuLaw    .load();
+            p.crushAll      = crushAllAudio .load();
+            p.filterMode    = 0;  // legacy global = Tilt
+            p.freqSplitMode = 0;  // legacy global = Full Range
+            p.freqSplitHz   = 500.0f;
+            p.driveType      = 0;
+            p.foldTopology   = 0;
+            p.shimmerOctave  = 0;
+            p.smearCharacter = 0;
+            p.stutterWindow  = 0;
+            p.varispeedCurve = 0;
+            p.slideCurve     = 0;
+            p.reverseMode    = 0;
+            p.tapeMode      = 0;
+            p.ringModWave   = 0;
+            p.chaosDistribution = 0;
+            p.feedbackCharacter = 0;
+            p.stretchMode   = 0;
+            p.judderShape   = 0;
+            p.lookbackBehaviour = 0;
+            p.decayCurve   = 0;
 
             // v0.42 — fall through to the legacy global atomics when no
             // Act is selected. Keeps freehand fires consistent with
@@ -3571,7 +3858,7 @@ LoopSaboteurProcessor::ShapingParams LoopSaboteurProcessor::paramsFromKnobs() co
     applyMod (p.shimmer,       kParamShimmer,   0.0f, 1.0f);
     applyMod (p.res,           kParamRes,       0.0f, 1.0f);
     applyMod (p.fold,          kParamFold,      0.0f, 1.0f);
-    applyMod (p.gate,          kParamGate,      0.0f, 1.0f);
+    applyMod (p.gate,          kParamGate,      -1.0f, 1.0f);
     applyMod (p.smear,         kParamSmear,     0.0f, 1.0f);
     applyMod (p.stutter,       kParamStutter,   0.0f, 1.0f);
     applyMod (p.chaos,         kParamChaos,     0.0f, 1.0f);
@@ -3610,18 +3897,38 @@ LoopSaboteurProcessor::ShapingParams LoopSaboteurProcessor::paramsFromScene (int
     p.shimmer       = juce::jlimit (0.0f, 1.0f,  s.shimmer .load());
     p.res           = juce::jlimit (0.0f, 0.98f, s.res     .load());
     p.fold          = juce::jlimit (0.0f, 1.0f,  s.fold    .load());
-    p.gate          = juce::jlimit (0.0f, 1.0f,  s.gate    .load());
+    p.gate          = juce::jlimit (-1.0f, 1.0f,  s.gate    .load());
     p.smear         = juce::jlimit (0.0f, 1.0f,  s.smear   .load());
     p.stutter       = juce::jlimit (0.0f, 1.0f,  s.stutter .load());
     p.chaos         = juce::jlimit (0.0f, 1.0f,  s.chaos   .load());
 
     // v0.41 — per-Act ENGINE.
-    p.engineStage   = s.engineStage.load();
-    p.engineMix     = juce::jlimit (0.0f, 1.0f, s.engineMix.load());
-    p.interpMode    = s.interpMode .load();
+    p.engineStage      = s.engineStage.load();
+    p.engineMix        = juce::jlimit (0.0f, 1.0f, s.engineMix.load());
+    p.engineIntensity  = juce::jlimit (0.0f, 1.0f, s.engineIntensity.load());
+    p.interpMode       = s.interpMode .load();
     p.crushAA       = s.crushAA    .load();
     p.crushMu       = s.crushMu    .load();
     p.crushAll      = s.crushAll   .load();
+    p.filterMode    = s.filterMode .load();
+    p.freqSplitMode = s.freqSplitMode.load();
+    p.freqSplitHz   = s.freqSplitHz .load();
+    p.driveType      = s.driveType.load();
+    p.foldTopology   = s.foldTopology.load();
+    p.shimmerOctave  = s.shimmerOctave.load();
+    p.smearCharacter = s.smearCharacter.load();
+    p.stutterWindow  = s.stutterWindow.load();
+    p.varispeedCurve = s.varispeedCurve.load();
+    p.slideCurve     = s.slideCurve.load();
+    p.reverseMode    = s.reverseMode.load();
+    p.tapeMode       = s.tapeMode.load();
+    p.ringModWave    = s.ringModWave.load();
+    p.chaosDistribution = s.chaosDistribution.load();
+    p.feedbackCharacter = s.feedbackCharacter.load();
+    p.stretchMode    = s.stretchMode.load();
+    p.judderShape    = s.judderShape.load();
+    p.lookbackBehaviour = s.lookbackBehaviour.load();
+    p.decayCurve    = s.decayCurve.load();
 
     // v0.42 — per-Act stereo mode + FX-on-Dry + ring mod quantise.
     p.stereoMode     = juce::jlimit (0, 3, s.stereoMode.load());
@@ -3656,7 +3963,7 @@ LoopSaboteurProcessor::ShapingParams LoopSaboteurProcessor::paramsFromScene (int
     applyMod (p.shimmer,       kParamShimmer,   0.0f, 1.0f);
     applyMod (p.res,           kParamRes,       0.0f, 1.0f);
     applyMod (p.fold,          kParamFold,      0.0f, 1.0f);
-    applyMod (p.gate,          kParamGate,      0.0f, 1.0f);
+    applyMod (p.gate,          kParamGate,      -1.0f, 1.0f);
     applyMod (p.smear,         kParamSmear,     0.0f, 1.0f);
     applyMod (p.stutter,       kParamStutter,   0.0f, 1.0f);
     applyMod (p.chaos,         kParamChaos,     0.0f, 1.0f);
@@ -3707,19 +4014,68 @@ void LoopSaboteurProcessor::fireVoice (const ShapingParams& params, double sampl
     // provided, replay from that exact buffer position instead of
     // computing a new one from writePos-lookback. This makes ratchet
     // sub-fires replay the same chop as the first hit.
+    //
+    // v0.6.0 — Lookback behaviour modifies the capture position:
+    //   Fixed (0):     exact lookback window (default)
+    //   Jittered (1):  random offset ±12.5% of lookback length per slice
+    //   Quantised (2): snap to nearest beat boundary within lookback
+    double adjustedLookback = lookbackSamples;
+    if (slicePosOverride < 0.0)  // only modify when not a ratchet retrigger
+    {
+        switch (params.lookbackBehaviour)
+        {
+            default:
+            case 0:  // Fixed — no change
+                break;
+            case 1:  // Jittered — ±12.5% random offset
+            {
+                const double jitterRange = lookbackSamples * 0.125;
+                adjustedLookback += (rng.nextDouble() * 2.0 - 1.0) * jitterRange;
+                if (adjustedLookback < 0.0) adjustedLookback = 0.0;
+                break;
+            }
+            case 2:  // Quantised — snap to nearest beat boundary
+            {
+                if (samplesPerQuarter > 0.0)
+                {
+                    const double beats = adjustedLookback / samplesPerQuarter;
+                    const double snapped = std::round (beats);
+                    adjustedLookback = juce::jmax (0.0, snapped * samplesPerQuarter);
+                }
+                break;
+            }
+        }
+    }
     const double sliceStartPos = (slicePosOverride >= 0.0)
         ? slicePosOverride
-        : wrapSamplePos ((double) writePos - lookbackSamples);
+        : wrapSamplePos ((double) writePos - adjustedLookback);
 
     // Slice length = one full division (in output samples). Judder
     // subdivides this into N hits of judderDivSamples each.
     const int divisionSamples  = juce::jmax (4, (int) std::round (divisionQ  * samplesPerQuarter));
     const int judderDivSamples = juce::jmax (4, (int) std::round (judderDivQ * samplesPerQuarter));
 
-    // Decide forward vs reverse for this fire. Per-hit coin flip so
-    // at Reverse = 0.5 you get a natural mix of forward and backward
-    // slices in the same phrase.
-    const bool reversed = rng.nextFloat() < reverseChance;
+    // Decide forward vs reverse for this fire. Mode-aware branching.
+    // v0.5.0 — reverseMode determines the decision strategy.
+    bool reversed = false;
+    switch (params.reverseMode)
+    {
+        default:
+        case 0:  // Random — coin flip based on reverseChance
+            reversed = rng.nextFloat() < reverseChance;
+            break;
+        case 1:  // Alternate — every other fire
+            reversed = reverseChance > 0.01f && ((fireCounter & 1) != 0);
+            break;
+        case 2:  // Palindrome — TODO: implement true palindrome in per-sample loop
+            reversed = false;  // for now, same as Random with 50% chance
+            reversed = rng.nextFloat() < 0.5f;
+            break;
+        case 3:  // Ping-Pong — alternates based on fire count
+            reversed = reverseChance > 0.01f && ((fireCounter & 1) != 0);
+            break;
+    }
+    fireCounter++;
 
     // Rate magnitude = pitch semitones × rate multiplier. Signed rate
     // encodes direction — readPos += rate handles both naturally.
@@ -3744,6 +4100,7 @@ void LoopSaboteurProcessor::fireVoice (const ShapingParams& params, double sampl
 
     // Configure the voice in one shot.
     voice.active          = true;
+    voice.fireIndex       = fireCounter - 1;  // v0.5.0 — capture fire index for mode-aware branching
     voice.readPos         = retrigStartPos;
     voice.retrigStartPos  = retrigStartPos;
     voice.rate            = signedRate;
@@ -3760,6 +4117,22 @@ void LoopSaboteurProcessor::fireVoice (const ShapingParams& params, double sampl
         voice.juddersRemaining      = judderCount - 1;
         voice.samplesRemaining      = judderDivSamples * judderCount;
         voice.totalSamples          = voice.samplesRemaining;
+
+        // v0.5.0 — Judder shape: adjust first interval for non-even modes
+        if (voice.voiceJudderShape == 1)  // Accelerating — first interval longest
+        {
+            // Scale first interval to ~1.8x, subsequent get shorter
+            voice.judderCountdown = (int) (judderDivSamples * 1.8f);
+        }
+        else if (voice.voiceJudderShape == 2)  // Decelerating — first interval shortest
+        {
+            voice.judderCountdown = (int) (judderDivSamples * 0.4f);
+        }
+        else if (voice.voiceJudderShape == 3)  // Random — jittered first interval
+        {
+            const float jitter = 0.5f + rng.nextFloat();  // 0.5x to 1.5x
+            voice.judderCountdown = (int) (judderDivSamples * jitter);
+        }
     }
     else
     {
@@ -3809,9 +4182,30 @@ void LoopSaboteurProcessor::fireVoice (const ShapingParams& params, double sampl
     // v0.41 — bake per-Act ENGINE flags onto the voice so slice-level
     // interp + crunch character travel with the fire even if the user
     // switches Acts before this slice ends.
-    voice.voiceInterpMode = juce::jlimit (0, (int) loopsab::kNumInterpModes - 1, params.interpMode);
-    voice.voiceCrushAA    = params.crushAA;
-    voice.voiceCrushMu    = params.crushMu;
+    voice.voiceInterpMode    = juce::jlimit (0, (int) loopsab::kNumInterpModes - 1, params.interpMode);
+    voice.voiceCrushAA       = params.crushAA;
+    voice.voiceCrushMu       = params.crushMu;
+    voice.voiceFilterMode    = juce::jlimit (0, (int) loopsab::kNumFilterModes - 1, params.filterMode);
+    voice.voiceFreqSplitMode = juce::jlimit (0, 2, params.freqSplitMode);
+    voice.voiceFreqSplitHz   = juce::jlimit (20.0f, 20000.0f, params.freqSplitHz);
+    voice.voiceDriveType      = juce::jlimit (0, (int) loopsab::kNumDriveTypes - 1, params.driveType);
+    voice.voiceFoldTopology   = juce::jlimit (0, (int) loopsab::kNumFoldTopologies - 1, params.foldTopology);
+    voice.voiceShimmerOctave  = juce::jlimit (0, (int) loopsab::kNumShimmerOctaves - 1, params.shimmerOctave);
+    voice.voiceSmearCharacter = juce::jlimit (0, (int) loopsab::kNumSmearCharacters - 1, params.smearCharacter);
+    voice.voiceStutterWindow  = juce::jlimit (0, (int) loopsab::kNumStutterWindows - 1, params.stutterWindow);
+    voice.voiceVarispeedCurve = juce::jlimit (0, (int) loopsab::kNumVarispeedCurves - 1, params.varispeedCurve);
+    voice.voiceSlideCurve     = juce::jlimit (0, (int) loopsab::kNumSlideCurves - 1, params.slideCurve);
+    voice.voiceReverseMode    = juce::jlimit (0, (int) loopsab::kNumReverseModes - 1, params.reverseMode);
+    voice.voiceTapeMode       = juce::jlimit (0, (int) loopsab::kNumTapeModes - 1, params.tapeMode);
+    voice.voiceRingModWave    = juce::jlimit (0, (int) loopsab::kNumRingModWaves - 1, params.ringModWave);
+    voice.voiceChaosDistribution = juce::jlimit (0, (int) loopsab::kNumChaosDistributions - 1, params.chaosDistribution);
+    voice.voiceFeedbackCharacter = juce::jlimit (0, (int) loopsab::kNumFeedbackCharacters - 1, params.feedbackCharacter);
+    voice.voiceStretchMode    = juce::jlimit (0, (int) loopsab::kNumStretchModes - 1, params.stretchMode);
+    voice.voiceJudderShape    = juce::jlimit (0, (int) loopsab::kNumJudderShapes - 1, params.judderShape);
+    voice.voiceLookbackBehaviour = juce::jlimit (0, (int) loopsab::kNumLookbackBehaviours - 1, params.lookbackBehaviour);
+    voice.voiceDecayCurve    = juce::jlimit (0, (int) loopsab::kNumDecayCurves - 1, params.decayCurve);
+    voice.xoverLpL = 0.0f; voice.xoverLpR = 0.0f;
+    voice.xoverHpL = 0.0f; voice.xoverHpR = 0.0f;
     voice.voiceRingModQuant = params.ringModQuant;            // v0.42
     voice.sceneIdx        = sourceSceneIdx;
 
@@ -3878,12 +4272,11 @@ void LoopSaboteurProcessor::fireVoice (const ShapingParams& params, double sampl
     }
 
     // v0.25 — granular stretch: initialise grain readers at the voice's
-    // start position. Grain length is ~50ms, adapted to sample rate.
-    voice.stretchSourcePos  = voice.readPos;
-    voice.stretchGrainPosA  = voice.readPos;
-    voice.stretchGrainPosB  = voice.readPos;
-    voice.stretchGrainPosC  = voice.readPos;
-    voice.stretchGrainLen   = juce::jmax (256, (int) (getSampleRate() * 0.05));
+    // start position. v0.5.0 — 4 grains at ~120ms for smoother sound.
+    voice.stretchSourcePos = voice.readPos;
+    for (int g = 0; g < PlaybackVoice::kNumStretchGrains; ++g)
+        voice.stretchGrainPos[g] = voice.readPos;
+    voice.stretchGrainLen   = juce::jmax (512, (int) (getSampleRate() * 0.12));
     voice.stretchGrainCount = 0;
 
 }
@@ -3920,10 +4313,11 @@ void LoopSaboteurProcessor::applyCrunch (float& l, float& r, float bitAmount, fl
     // --- RATE: sample-and-hold decimation --------------------------------
     if (hasRate)
     {
-        // Quadratic curve: gentle at low values, aggressive at high.
-        // v0.44 — cap at ~2kHz effective rate regardless of session SR.
+        // v0.6.0 — power-1.3 curve: noticeably bites earlier than the
+        // old quadratic, but still accelerates into the extremes.
+        // Cap at ~2 kHz effective rate regardless of session SR.
         const int maxHold = juce::jmax (2, (int) (sampleRate / 2000.0));
-        const float t  = rateAmount * rateAmount;
+        const float t  = std::pow (rateAmount, 1.3f);
         const int srHold = 1 + (int) (t * (float) (maxHold - 1));
 
         // Jittered hold period for organic, hardware-like feel.
@@ -4037,7 +4431,8 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     {
         if (auto pos = ph->getPosition())
         {
-            if (auto b = pos->getBpm())         bpm       = *b;
+            if (auto b = pos->getBpm())
+                if (*b > 0.1) bpm = *b;  // reject invalid/zero BPM
             if (auto p = pos->getPpqPosition()) ppqStart  = *p;
             isPlaying = pos->getIsPlaying();
         }
@@ -4163,6 +4558,9 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         const float cleanL = io[0][i];
         const float cleanR = (numChannels > 1) ? io[1][i] : cleanL;
 
+        // v0.5.0 — envelope follower input level (peak of current sample).
+        envFollowInputLevel = juce::jmax (std::abs (cleanL), std::abs (cleanR));
+
         // 1. Work out the currently-playing sequencer step first, because
         //    per-step Freeze holds need to be known BEFORE we decide
         //    whether to capture the incoming audio into the ring.
@@ -4180,10 +4578,29 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 // as the origin. All subsequent step calculations are
                 // relative to that origin so the sequencer always starts
                 // from step 0 regardless of which bar the DAW plays from.
-                if (! seqOriginSet)
+                //
+                // v0.5.0 — re-latch when PPQ jumps backwards (DAW loop
+                // restart). Without this, looping from the same bar gives
+                // a different sequencer position each time because the
+                // origin was captured on the very first play and never
+                // updated.
+                const bool loopRestart = (lastPpq >= 0.0 && samplePpq < lastPpq - seqStepQ);
+                if (! seqOriginSet || loopRestart)
                 {
                     seqOriginStep = (long long) std::floor (samplePpq / seqStepQ);
                     seqOriginSet  = true;
+                    // Full state reset so the sequencer starts cleanly —
+                    // same as a transport play-start.
+                    lastWrappedStep = -1;
+                    lastPpq = -1.0;
+                    ratioPatternPlayCount = 0;
+                    lastSeqStepAbsForRatio = -1;
+                    lastExpectedStep = 0;
+                    for (int s = 0; s < kMaxSteps; ++s)
+                    {
+                        stepLastFireResult[s] = false;
+                        onceStepFired[s]      = false;
+                    }
                 }
                 curSeqStepAbs = (long long) std::floor (samplePpq / seqStepQ) - seqOriginStep;
                 // Ensure non-negative (negative PPQ during count-in).
@@ -4337,6 +4754,7 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                     const float depth  = lfo.depth.load();
                     const int   shape  = lfo.shape.load();
                     const bool  isEnv  = (shape == kLfoEnvAHD);
+                    const bool  isFollow = (shape == kLfoEnvFollow);
 
                     // v0.38 — cross-mod input: any other LFO in this Act
                     // whose crossTargetLfo points at ME contributes to my
@@ -4418,6 +4836,33 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                         }
 
                         val = lfo.envValue;  // monopolar 0..+1
+                    }
+                    else if (isFollow)
+                    {
+                        // v0.5.0 — Envelope follower: tracks input amplitude.
+                        // Rate knob repurposes as smoothing time. Higher rate
+                        // index = faster response. Uses a simple one-pole
+                        // filter with asymmetric attack/release.
+                        const int rateIdx = lfo.rateIdx.load();
+                        // Map rate index to smoothing time: lower index = more
+                        // smoothing. rateIdx 0 = ~200ms, rateIdx max = ~2ms.
+                        const float smoothMs = juce::jlimit (1.0f, 200.0f,
+                            200.0f / juce::jmax (1.0f, (float) rateIdx));
+                        const float attackCoeff = std::exp (-1.0f / (float) (sampleRate * smoothMs * 0.001f * 0.3f));
+                        const float releaseCoeff = std::exp (-1.0f / (float) (sampleRate * smoothMs * 0.001f));
+
+                        // v0.6.0 — input gain / sensitivity boost.
+                        const float inputLvl = juce::jlimit (0.0f, 1.0f,
+                            envFollowInputLevel * lfo.envFollowGain.load());
+                        // Asymmetric follower: fast attack, slower release.
+                        if (inputLvl > lfo.envFollowValue)
+                            lfo.envFollowValue = attackCoeff * lfo.envFollowValue
+                                               + (1.0f - attackCoeff) * inputLvl;
+                        else
+                            lfo.envFollowValue = releaseCoeff * lfo.envFollowValue
+                                               + (1.0f - releaseCoeff) * inputLvl;
+
+                        val = juce::jlimit (0.0f, 1.0f, lfo.envFollowValue);
                     }
                     else
                     {
@@ -4996,6 +5441,9 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         // 3. Produce the voice's sample (or silence if idle).
         float sliceL = 0.0f, sliceR = 0.0f;
         const bool voiceActive = voice.active;
+        // v0.5.0 — freq split state (declared here so recombine can see them).
+        float freqSplitDryL = 0.0f, freqSplitDryR = 0.0f;
+        int   splitMode = 0;
 
         if (voiceActive)
         {
@@ -5008,65 +5456,89 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             // skipped and we do a plain single-sample read.
             if (voice.voiceStretch > 0.0001f)
             {
+                // v0.5.0 — 4-grain granular stretch with interpolated reads.
+                // 4 Hann-windowed grains at 90° phase offsets sum to constant
+                // energy (2.0), giving smoother overlap than the old 3-grain
+                // approach. Grain length ~120ms reduces audible granularity.
+                constexpr int nGrains = PlaybackVoice::kNumStretchGrains;  // 4
                 const int gl = voice.stretchGrainLen;
-                const int thirdGl = gl / 3;
+                const int quarterGl = gl / nGrains;
                 const double normalRate = voice.rate;
+                const int iMode = voice.voiceInterpMode;
 
                 // Source cursor advances slower → time stretches.
                 // At 100% stretch, source plays at 25% speed → 4x stretch.
-                const double stretchFactor = 1.0 - (double) voice.voiceStretch * 0.75;
+                // v0.5.0 — mode-aware DSP branching based on stretchMode
+                double stretchFactor;
+                switch (voice.voiceStretchMode)
+                {
+                    default:
+                    case 0:  // Standard — original
+                        stretchFactor = 1.0 - (double) voice.voiceStretch * 0.75;
+                        break;
+                    case 1:  // Paulstretch — massive overlap, frozen texture
+                        stretchFactor = 1.0 - (double) voice.voiceStretch * 0.95;  // source barely moves
+                        break;
+                    case 2:  // Spectral — freeze grain positions when stretch > 0.5
+                        if (voice.voiceStretch > 0.5f)
+                        {
+                            stretchFactor = 0.0;  // source stops completely
+                        }
+                        else
+                        {
+                            stretchFactor = 1.0 - (double) voice.voiceStretch * 1.5;
+                        }
+                        break;
+                    case 3:  // Formant — shorter grains for vocal clarity
+                        stretchFactor = 1.0 - (double) voice.voiceStretch * 0.75;
+                        // Note: grain length adjustment happens at fire time
+                        break;
+                }
                 voice.stretchSourcePos += normalRate * stretchFactor;
                 if (voice.stretchSourcePos >= (double) circularBufferSize)
                     voice.stretchSourcePos -= (double) circularBufferSize;
                 if (voice.stretchSourcePos < 0.0)
                     voice.stretchSourcePos += (double) circularBufferSize;
 
-                // Advance all three grain read heads at normal speed
-                auto advanceGrain = [&] (double& pos)
+                // Advance all grain read heads at normal speed
+                for (int g = 0; g < nGrains; ++g)
                 {
-                    pos += normalRate;
-                    if (pos >= (double) circularBufferSize) pos -= (double) circularBufferSize;
-                    if (pos < 0.0)                          pos += (double) circularBufferSize;
-                };
-                advanceGrain (voice.stretchGrainPosA);
-                advanceGrain (voice.stretchGrainPosB);
-                advanceGrain (voice.stretchGrainPosC);
+                    voice.stretchGrainPos[g] += normalRate;
+                    if (voice.stretchGrainPos[g] >= (double) circularBufferSize)
+                        voice.stretchGrainPos[g] -= (double) circularBufferSize;
+                    if (voice.stretchGrainPos[g] < 0.0)
+                        voice.stretchGrainPos[g] += (double) circularBufferSize;
+                }
 
-                // Advance grain counter; reset each grain at 1/3 intervals
+                // Advance grain counter; reset each grain at its 1/N interval
                 voice.stretchGrainCount++;
-                if (voice.stretchGrainCount >= gl)
+                for (int g = 0; g < nGrains; ++g)
                 {
-                    voice.stretchGrainCount -= gl;
-                    voice.stretchGrainPosA = voice.stretchSourcePos;
-                }
-                if (voice.stretchGrainCount == thirdGl)
-                {
-                    voice.stretchGrainPosB = voice.stretchSourcePos;
-                }
-                if (voice.stretchGrainCount == thirdGl * 2)
-                {
-                    voice.stretchGrainPosC = voice.stretchSourcePos;
+                    const int resetPoint = (g == 0) ? 0 : quarterGl * g;
+                    if ((g == 0 && voice.stretchGrainCount >= gl)
+                        || (g != 0 && voice.stretchGrainCount == resetPoint))
+                    {
+                        if (g == 0) voice.stretchGrainCount -= gl;
+                        voice.stretchGrainPos[g] = voice.stretchSourcePos;
+                    }
                 }
 
-                // Read all three grains
-                const int idxA = wrappedBufferIndex (voice.stretchGrainPosA);
-                const int idxB = wrappedBufferIndex (voice.stretchGrainPosB);
-                const int idxC = wrappedBufferIndex (voice.stretchGrainPosC);
-
-                // Hann windows at 120° offsets — three windows sum
-                // to ~constant energy across the full cycle.
+                // Sum grains with Hann windows at 90° offsets + interpolated reads
                 const float twoPiF = juce::MathConstants<float>::twoPi;
-                const float phaseA = (float) voice.stretchGrainCount / (float) gl;
-                const float phaseB = (float) ((voice.stretchGrainCount + thirdGl) % gl) / (float) gl;
-                const float phaseC = (float) ((voice.stretchGrainCount + thirdGl * 2) % gl) / (float) gl;
-                const float winA = 0.5f * (1.0f - std::cos (phaseA * twoPiF));
-                const float winB = 0.5f * (1.0f - std::cos (phaseB * twoPiF));
-                const float winC = 0.5f * (1.0f - std::cos (phaseC * twoPiF));
-
-                sliceL = cb[0][idxA] * winA + cb[0][idxB] * winB + cb[0][idxC] * winC;
-                sliceR = (numChannels > 1)
-                       ? (cb[1][idxA] * winA + cb[1][idxB] * winB + cb[1][idxC] * winC)
-                       : sliceL;
+                sliceL = 0.0f;
+                sliceR = 0.0f;
+                for (int g = 0; g < nGrains; ++g)
+                {
+                    const float phase = (float) ((voice.stretchGrainCount + quarterGl * g) % gl) / (float) gl;
+                    const float win = 0.5f * (1.0f - std::cos (phase * twoPiF));
+                    const float sL = readBufferInterp (0, voice.stretchGrainPos[g], iMode);
+                    sliceL += sL * win;
+                    if (numChannels > 1)
+                        sliceR += readBufferInterp (1, voice.stretchGrainPos[g], iMode) * win;
+                }
+                // 4 Hann windows at 90° sum to 2.0; normalise to unity.
+                sliceL *= 0.5f;
+                sliceR = (numChannels > 1) ? (sliceR * 0.5f) : sliceL;
             }
             else
             {
@@ -5116,6 +5588,43 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 voice.judderXfadeRemaining--;
             }
 
+            // --- v0.6.0 Frequency split (per-Act) ----------------------------
+            // When Low Only or High Only is active, a cascaded two-pole
+            // (12 dB/oct) crossover splits the signal BEFORE any FX so
+            // that crunch, drive, fold, tape, shimmer, stutter, chaos —
+            // everything — only processes the chosen band. The excluded
+            // band is stashed in freqSplitDryL/R and recombined after
+            // all FX, keeping it pristine. This lets you keep kicks
+            // clean while mangling everything above the crossover, etc.
+            splitMode = voice.voiceFreqSplitMode;
+            if (splitMode != 0)
+            {
+                const float xHz  = voice.voiceFreqSplitHz;
+                const float xCoeff = 1.0f - std::exp (-juce::MathConstants<float>::twoPi
+                                                       * xHz / (float) sampleRate);
+                // First LP stage
+                voice.xoverLpL += xCoeff * (sliceL - voice.xoverLpL);
+                voice.xoverLpR += xCoeff * (sliceR - voice.xoverLpR);
+                // Second LP stage (cascaded → 12 dB/oct)
+                voice.xoverHpL += xCoeff * (voice.xoverLpL - voice.xoverHpL);
+                voice.xoverHpR += xCoeff * (voice.xoverLpR - voice.xoverHpR);
+
+                if (splitMode == 1) // Low Only — process lows, keep highs clean
+                {
+                    freqSplitDryL = sliceL - voice.xoverHpL;
+                    freqSplitDryR = sliceR - voice.xoverHpR;
+                    sliceL = voice.xoverHpL;
+                    sliceR = voice.xoverHpR;
+                }
+                else // High Only — process highs, keep lows clean
+                {
+                    freqSplitDryL = voice.xoverHpL;
+                    freqSplitDryR = voice.xoverHpR;
+                    sliceL = sliceL - voice.xoverHpL;
+                    sliceR = sliceR - voice.xoverHpR;
+                }
+            }
+
             // v0.22 — skip per-voice crush when "All audio" mode is on
             // (the master output path handles it instead).
             // v0.41 — also use voice's baked AA/Mu flags so per-Act crush
@@ -5125,36 +5634,62 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                              voice.voiceCrushAA, voice.voiceCrushMu);
 
             // --- FX row --------------------------------------------------
-            // DRIVE: tanh blend. At 0 we return the signal untouched.
+            // DRIVE: multi-mode saturation. At 0 we return the signal untouched.
             // v0.30 — skip per-voice when global toggle is on.
+            // v0.5.0 — mode-aware branching based on voiceDriveType.
             if (voice.voiceDrive > 0.0001f && ! gfxDrive)
             {
                 const float d = voice.voiceDrive;
-                const float g = 1.0f + d * 5.0f;  // pre-gain ramps with knob
-                const float wet = d;              // also fades in the character
-                sliceL = (1.0f - wet) * sliceL + wet * std::tanh (sliceL * g);
-                sliceR = (1.0f - wet) * sliceR + wet * std::tanh (sliceR * g);
+                const float g = 1.0f + d * 5.0f;
+                const float wet = d;
+                float satL, satR;
+
+                switch (voice.voiceDriveType)
+                {
+                    default:
+                    case 0:  // Tape — symmetric soft-clip (tanh)
+                        satL = std::tanh (sliceL * g);
+                        satR = std::tanh (sliceR * g);
+                        break;
+                    case 1:  // Tube — asymmetric even harmonics (shifted tanh)
+                    {
+                        const float bias = 0.2f * d;
+                        satL = std::tanh ((sliceL + bias) * g) - std::tanh (bias * g);
+                        satR = std::tanh ((sliceR + bias) * g) - std::tanh (bias * g);
+                        break;
+                    }
+                    case 2:  // Diode — hard clip, odd harmonics
+                        satL = juce::jlimit (-1.0f, 1.0f, sliceL * g);
+                        satR = juce::jlimit (-1.0f, 1.0f, sliceR * g);
+                        break;
+                    case 3:  // Fuzz — extreme asymmetric (positive crushed, negative clipped)
+                    {
+                        const float fuzzL = sliceL * g;
+                        const float fuzzR = sliceR * g;
+                        satL = fuzzL > 0.0f ? std::tanh (fuzzL * 3.0f) : juce::jlimit (-1.0f, 0.0f, fuzzL);
+                        satR = fuzzR > 0.0f ? std::tanh (fuzzR * 3.0f) : juce::jlimit (-1.0f, 0.0f, fuzzR);
+                        break;
+                    }
+                }
+                sliceL = (1.0f - wet) * sliceL + wet * satL;
+                sliceR = (1.0f - wet) * sliceR + wet * satR;
             }
 
-            // TONE + RES: bipolar tilt EQ (v0.24).
-            // 0.5 = bypass. Below 0.5 = LP darkening via Chamberlin SVF.
-            // Above 0.5 = HF shelf boost (air/brightness).
-            // RES adds resonance to the LP side; no effect on the HF side.
+            // TONE + RES filter (v0.24 / v0.5.0 multi-mode).
             //
-            // v0.20 — soft-clipped feedback on the SVF path.
+            // v0.5.0 — four selectable modes per-Act:
+            //   Tilt (legacy):  0.5=bypass, <0.5=LP dark, >0.5=HF bright
+            //   LP:  Tone 0→1 maps cutoff 20 Hz→20 kHz, Res = resonance
+            //   HP:  same range, high-pass output
+            //   BP:  same range, bandpass output
+            //
+            // All modes use the same Chamberlin SVF with soft-clipped
+            // feedback; we just pick which output (low/band/high) to use.
+            //
             // v0.30 — skip per-voice when global toggle is on.
-            if (voice.voiceTone < 0.499f && ! gfxTone)
+            if (! gfxTone)
             {
-                // --- LP darkening: map 0..0.5 -> 0..1 for old tone range ---
-                const float toneNorm = voice.voiceTone * 2.0f;  // 0 at knob-zero, 1 at centre
-                const double cutoffHz = juce::jlimit (
-                    30.0, sampleRate * 0.45,
-                    350.0 * std::pow (60.0, (double) toneNorm));
-
-                const double fRaw = 2.0 * std::sin (juce::MathConstants<double>::pi
-                                                     * cutoffHz / sampleRate);
-                const float f = (float) juce::jlimit (0.0, 0.48, fRaw);
-                const float q = juce::jmax (0.005f, 1.0f - voice.voiceRes);
+                const int fMode = voice.voiceFilterMode;
 
                 auto softClip = [] (float x) -> float
                 {
@@ -5162,51 +5697,137 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                     return x * (27.0f + x2) / (27.0f + 9.0f * x2);
                 };
 
-                // Left channel.
+                if (fMode == loopsab::kFilterTilt)
                 {
-                    const float bp = softClip (voice.svfBandL);
-                    const float high = sliceL - voice.svfLowL - q * bp;
-                    voice.svfBandL += f * high;
-                    voice.svfLowL  += f * softClip (voice.svfBandL);
-                    sliceL = voice.svfLowL;
+                    // --- legacy Tilt mode (unchanged behaviour) ---
+                    if (voice.voiceTone < 0.499f)
+                    {
+                        const float toneNorm = voice.voiceTone * 2.0f;
+                        const double cutoffHz = juce::jlimit (
+                            30.0, sampleRate * 0.45,
+                            350.0 * std::pow (60.0, (double) toneNorm));
+                        const double fRaw = 2.0 * std::sin (juce::MathConstants<double>::pi
+                                                             * cutoffHz / sampleRate);
+                        const float f = (float) juce::jlimit (0.0, 0.48, fRaw);
+                        const float q = juce::jmax (0.005f, 1.0f - voice.voiceRes);
+
+                        {
+                            const float bp = softClip (voice.svfBandL);
+                            const float high = sliceL - voice.svfLowL - q * bp;
+                            voice.svfBandL += f * high;
+                            voice.svfLowL  += f * softClip (voice.svfBandL);
+                            sliceL = voice.svfLowL;
+                        }
+                        {
+                            const float bp = softClip (voice.svfBandR);
+                            const float high = sliceR - voice.svfLowR - q * bp;
+                            voice.svfBandR += f * high;
+                            voice.svfLowR  += f * softClip (voice.svfBandR);
+                            sliceR = voice.svfLowR;
+                        }
+                    }
+                    else if (voice.voiceTone > 0.501f)
+                    {
+                        const float airAmt = (voice.voiceTone - 0.5f) * 2.0f;
+                        const float hpCoeff = 0.7f;
+                        voice.svfLowL += hpCoeff * (sliceL - voice.svfLowL);
+                        voice.svfLowR += hpCoeff * (sliceR - voice.svfLowR);
+                        const float hfL = sliceL - voice.svfLowL;
+                        const float hfR = sliceR - voice.svfLowR;
+                        sliceL += hfL * airAmt * 3.0f;
+                        sliceR += hfR * airAmt * 3.0f;
+                    }
                 }
-                // Right channel.
+                else
                 {
-                    const float bp = softClip (voice.svfBandR);
-                    const float high = sliceR - voice.svfLowR - q * bp;
-                    voice.svfBandR += f * high;
-                    voice.svfLowR  += f * softClip (voice.svfBandR);
-                    sliceR = voice.svfLowR;
+                    // --- LP / HP / BP: full-range resonant SVF ---
+                    // Tone 0→1 maps cutoff exponentially 20 Hz → Nyquist*0.45
+                    const double cutoffHz = juce::jlimit (
+                        20.0, sampleRate * 0.45,
+                        20.0 * std::pow (1000.0, (double) voice.voiceTone));
+                    const double fRaw = 2.0 * std::sin (juce::MathConstants<double>::pi
+                                                         * cutoffHz / sampleRate);
+                    const float f = (float) juce::jlimit (0.0, 0.48, fRaw);
+                    // Res 0→1 maps damping 1→0.005 (higher res = sharper peak)
+                    const float q = juce::jmax (0.005f, 1.0f - voice.voiceRes * 0.995f);
+
+                    // Left channel SVF tick
+                    {
+                        const float bp = softClip (voice.svfBandL);
+                        const float high = sliceL - voice.svfLowL - q * bp;
+                        voice.svfBandL += f * high;
+                        voice.svfLowL  += f * softClip (voice.svfBandL);
+                    }
+                    // Right channel SVF tick
+                    {
+                        const float bp = softClip (voice.svfBandR);
+                        const float high = sliceR - voice.svfLowR - q * bp;
+                        voice.svfBandR += f * high;
+                        voice.svfLowR  += f * softClip (voice.svfBandR);
+                    }
+
+                    // Pick the output based on mode
+                    switch (fMode)
+                    {
+                        default:
+                        case loopsab::kFilterLP:
+                            sliceL = voice.svfLowL;
+                            sliceR = voice.svfLowR;
+                            break;
+                        case loopsab::kFilterHP:
+                            sliceL = sliceL - voice.svfLowL - q * softClip (voice.svfBandL);
+                            sliceR = sliceR - voice.svfLowR - q * softClip (voice.svfBandR);
+                            break;
+                        case loopsab::kFilterBP:
+                            sliceL = voice.svfBandL;
+                            sliceR = voice.svfBandR;
+                            break;
+                    }
                 }
             }
-            else if (voice.voiceTone > 0.501f && ! gfxTone)
-            {
-                // --- HF shelf boost: map 0.5..1.0 -> 0..1 brightness ---
-                const float airAmt = (voice.voiceTone - 0.5f) * 2.0f;
 
-                // One-pole LP extracts the low end; subtracting it gives
-                // the HF residual. We boost that residual back in. Coeff
-                // ~0.7 places the shelf corner around 1-1.5 kHz at 44.1k
-                // so the effect is clearly audible, not just sparkle.
-                const float hpCoeff = 0.7f;
-                voice.svfLowL += hpCoeff * (sliceL - voice.svfLowL);
-                voice.svfLowR += hpCoeff * (sliceR - voice.svfLowR);
-                const float hfL = sliceL - voice.svfLowL;
-                const float hfR = sliceR - voice.svfLowR;
-                sliceL += hfL * airAmt * 3.0f;
-                sliceR += hfR * airAmt * 3.0f;
-            }
-
-            // FOLD: sine wavefolder. At 0 = untouched; at 1 you get
+            // FOLD: multi-mode wavefolder. At 0 = untouched; at 1 you get
             // metallic harmonics as the signal keeps folding back on
             // itself. Blended with the dry so knob=1 isn't a full wipe.
             // v0.30 — skip per-voice when global toggle is on.
+            // v0.5.0 — mode-aware branching based on voiceFoldTopology.
             if (voice.voiceFold > 0.0001f && ! gfxFold)
             {
                 const float fd = voice.voiceFold;
                 const float drive = 1.0f + fd * 6.0f;
-                const float foldedL = std::sin (sliceL * drive * juce::MathConstants<float>::halfPi);
-                const float foldedR = std::sin (sliceR * drive * juce::MathConstants<float>::halfPi);
+                float foldedL, foldedR;
+
+                switch (voice.voiceFoldTopology)
+                {
+                    default:
+                    case 0:  // Sine fold — smooth
+                        foldedL = std::sin (sliceL * drive * juce::MathConstants<float>::halfPi);
+                        foldedR = std::sin (sliceR * drive * juce::MathConstants<float>::halfPi);
+                        break;
+                    case 1:  // Triangle fold — sharper, metallic
+                    {
+                        auto triFold = [] (float x) {
+                            // Map to triangle wave: 4 * |((x/4 - floor(x/4 + 0.5))| - 1
+                            const float p = x * 0.25f;
+                            return 4.0f * std::abs (p - std::floor (p + 0.5f)) - 1.0f;
+                        };
+                        foldedL = triFold (sliceL * drive);
+                        foldedR = triFold (sliceR * drive);
+                        break;
+                    }
+                    case 2:  // Asymmetric — different fold on +/- half
+                    {
+                        auto asymFold = [] (float x, float d) {
+                            if (x >= 0.0f)
+                                return std::sin (x * d * juce::MathConstants<float>::halfPi);
+                            else
+                                return -std::sin (-x * d * 0.7f * juce::MathConstants<float>::halfPi);
+                        };
+                        foldedL = asymFold (sliceL, drive);
+                        foldedR = asymFold (sliceR, drive);
+                        break;
+                    }
+                }
                 sliceL = (1.0f - fd) * sliceL + fd * foldedL;
                 sliceR = (1.0f - fd) * sliceR + fd * foldedR;
             }
@@ -5239,7 +5860,29 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 voice.ringModPhase += rmFreq * juce::MathConstants<double>::twoPi / sampleRate;
                 if (voice.ringModPhase > juce::MathConstants<double>::twoPi)
                     voice.ringModPhase -= juce::MathConstants<double>::twoPi;
-                const float mod = (float) std::sin (voice.ringModPhase);
+                float mod;
+                switch (voice.voiceRingModWave)
+                {
+                    default:
+                    case 0:  // Sine — classic
+                        mod = (float) std::sin (voice.ringModPhase);
+                        break;
+                    case 1:  // Square — octave-down harshness
+                        mod = (voice.ringModPhase < juce::MathConstants<double>::pi) ? 1.0f : -1.0f;
+                        break;
+                    case 2:  // Triangle — mellower
+                    {
+                        const double norm = voice.ringModPhase / juce::MathConstants<double>::twoPi;
+                        mod = (float) (4.0 * std::abs (norm - 0.5) - 1.0);
+                        break;
+                    }
+                    case 3:  // Saw — asymmetric edge
+                    {
+                        const double norm = voice.ringModPhase / juce::MathConstants<double>::twoPi;
+                        mod = (float) (2.0 * norm - 1.0);
+                        break;
+                    }
+                }
                 // Wet/dry blend: full knob = fully ring-modded
                 sliceL = (1.0f - rm) * sliceL + rm * sliceL * mod;
                 sliceR = (1.0f - rm) * sliceR + rm * sliceR * mod;
@@ -5251,68 +5894,137 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             // on top of the clean signal, scaled by the knob. Result
             // is a glistening HF sparkle that sits above the original
             // without muting anything the way CRUNCH does.
+            // v0.5.0 — mode-aware DSP branching based on voiceShimmerOctave.
             if (voice.voiceShimmer > 0.0001f)
             {
-                if ((voice.shimmerCounter & 1) == 0)
+                int period;
+                switch (voice.voiceShimmerOctave)
                 {
-                    voice.shimmerHeldL = sliceL;
-                    voice.shimmerHeldR = sliceR;
+                    default:
+                    case 0: period = 2; break;   // +1 Oct (every 2nd sample)
+                    case 1: period = 4; break;   // +2 Oct (every 4th sample)
+                    case 2: period = 2; break;   // -1 Oct (hold for 2, see below)
+                    case 3: period = 3; break;   // +5th (every 3rd sample)
+                    case 4: period = 2; break;   // +5th/Oct (dual, handled below)
                 }
-                const float sh = voice.voiceShimmer;
-                const float aliasL = sliceL - voice.shimmerHeldL;
-                const float aliasR = sliceR - voice.shimmerHeldR;
-                sliceL += aliasL * sh * 2.5f;
-                sliceR += aliasR * sh * 2.5f;
+
+                if (voice.voiceShimmerOctave == 2)
+                {
+                    // -1 Oct: hold each sample for 2 ticks (repeat, creating subharmonic)
+                    if ((voice.shimmerCounter % 2) == 0)
+                    {
+                        voice.shimmerHeldL = sliceL;
+                        voice.shimmerHeldR = sliceR;
+                    }
+                    // Use held value directly (replayed = octave-down residual)
+                    const float sh = voice.voiceShimmer;
+                    const float diffL = voice.shimmerHeldL - sliceL;
+                    const float diffR = voice.shimmerHeldR - sliceR;
+                    sliceL += diffL * sh * 2.5f;
+                    sliceR += diffR * sh * 2.5f;
+                }
+                else if (voice.voiceShimmerOctave == 4)
+                {
+                    // +5th/Oct dual: mix of period-3 (fifth) and period-2 (octave) residuals
+                    const float sh = voice.voiceShimmer;
+                    float aliasL = 0.0f, aliasR = 0.0f;
+
+                    if ((voice.shimmerCounter % 2) == 0)
+                    {
+                        voice.shimmerHeldL = sliceL;
+                        voice.shimmerHeldR = sliceR;
+                    }
+                    aliasL += (sliceL - voice.shimmerHeldL) * 0.5f;
+                    aliasR += (sliceR - voice.shimmerHeldR) * 0.5f;
+
+                    // We need a second held pair for the fifth. Use shimmerHeld2 if it exists,
+                    // or reuse shimmerHeld with a different modulo. Check if voice has a second
+                    // held pair — if not, just alternate the residual extraction.
+                    if ((voice.shimmerCounter % 3) == 0)
+                    {
+                        aliasL += (sliceL - voice.shimmerHeldL) * 0.5f;
+                        aliasR += (sliceR - voice.shimmerHeldR) * 0.5f;
+                    }
+
+                    sliceL += aliasL * sh * 2.5f;
+                    sliceR += aliasR * sh * 2.5f;
+                }
+                else
+                {
+                    // Standard: sample at period, extract aliased residual
+                    if ((voice.shimmerCounter % period) == 0)
+                    {
+                        voice.shimmerHeldL = sliceL;
+                        voice.shimmerHeldR = sliceR;
+                    }
+                    const float sh = voice.voiceShimmer;
+                    const float aliasL = sliceL - voice.shimmerHeldL;
+                    const float aliasR = sliceR - voice.shimmerHeldR;
+                    sliceL += aliasL * sh * 2.5f;
+                    sliceR += aliasR * sh * 2.5f;
+                }
                 voice.shimmerCounter++;
             }
 
-            // GATE — Buchla-style low-pass gate.
+            // SHAPE — bipolar transient control (v0.5.0, was GATE).
             //
-            // v0.22 — completely reworked. Instead of a fixed-rate sine
-            // LFO, the gate now uses an exponential decay envelope that
-            // resets on each judder sub-trigger. This gives it a real
-            // percussive vactrol feel: fast attack, squishy decay, and
-            // the filter cutoff tracks the amplitude so the sound gets
-            // darker as it gets quieter — exactly like a Buchla 292.
+            // Negative (Soft): Buchla-style LPG. Attack softening via
+            // exponential decay envelope + cascaded LP filter. Produces
+            // squishy vactrol feel; darker as amplitude decays.
             //
-            // The GATE knob controls depth: 0 = off (pass-through),
-            // 1 = full LPG effect with aggressive filtering and fast
-            // decay. Intermediate values blend between dry and LPG.
-            if (voice.voiceGate > 0.0001f)
+            // Positive (Snappy): Transient emphasis via one-shot envelope
+            // that boosts the first few ms of each slice, then decays to
+            // unity. Makes attacks pop and punch through.
+            //
+            // Zero = bypass (no processing).
+            if (voice.voiceGate < -0.0001f)
             {
-                // Decay rate: higher gate = faster decay for choppier
-                // rhythms. Range: ~200ms (gate=0.1) to ~15ms (gate=1).
+                // --- Soft (LPG) side: same Buchla 292 behaviour as old Gate ---
+                const float depth = -voice.voiceGate;  // 0..1
+
                 const float decayMs = juce::jlimit (8.0f, 300.0f,
-                    300.0f * (1.0f - voice.voiceGate * 0.95f));
+                    300.0f * (1.0f - depth * 0.95f));
                 const float decayCoeff = std::exp (-1.0f / (float) (sampleRate * decayMs * 0.001f));
 
-                // Advance the envelope: exponential decay from 1→0.
                 voice.gateEnvelope *= decayCoeff;
-
-                // The envelope is the "vactrol" — it controls both
-                // amplitude AND filter cutoff simultaneously.
                 const float env = voice.gateEnvelope;
 
-                // LPG filter: two cascaded one-pole LPs for a steeper
-                // rolloff that really darkens as the gate closes.
-                // Coefficient tracks the envelope with a cubic curve
-                // (steeper than squared) for that squishy vactrol feel.
                 const float lpgCoeff = juce::jlimit (0.003f, 1.0f,
                     env * env * env);
 
-                // First pole
-                voice.gateLpgL += lpgCoeff * (sliceL - voice.gateLpgL);
-                voice.gateLpgR += lpgCoeff * (sliceR - voice.gateLpgR);
-                // Second pole (cascade)
+                voice.gateLpgL  += lpgCoeff * (sliceL - voice.gateLpgL);
+                voice.gateLpgR  += lpgCoeff * (sliceR - voice.gateLpgR);
                 voice.gateLpg2L += lpgCoeff * (voice.gateLpgL - voice.gateLpg2L);
                 voice.gateLpg2R += lpgCoeff * (voice.gateLpgR - voice.gateLpg2R);
 
-                // Mix: blend between dry signal and the LPG-filtered
-                // + amplitude-shaped signal based on gate depth.
-                const float wet = voice.voiceGate;
+                const float wet = depth;
                 const float dry = 1.0f - wet;
                 sliceL = dry * sliceL + wet * voice.gateLpg2L * env;
                 sliceR = dry * sliceR + wet * voice.gateLpg2R * env;
+            }
+            else if (voice.voiceGate > 0.0001f)
+            {
+                // --- Snappy (transient emphasis) side ---
+                // One-shot envelope starts at (1 + boost) and decays to 1.0.
+                // The boost magnitude scales with knob position: +1 at 50%,
+                // +3 at 100%. Attack time is very short (~1ms) so we're
+                // essentially boosting the first few samples.
+                const float depth = voice.voiceGate;  // 0..1
+                const float maxBoost = 1.0f + depth * 3.0f;
+
+                // Envelope decays from maxBoost toward 1.0 with a fast
+                // time constant (~3ms at depth=0.5, ~1ms at depth=1).
+                const float decayMs = juce::jlimit (0.5f, 8.0f,
+                    8.0f * (1.0f - depth * 0.9f));
+                const float decayCoeff = std::exp (-1.0f / (float) (sampleRate * decayMs * 0.001f));
+
+                // gateEnvelope starts at 1.0 (reset on each fire/judder).
+                // We use it as the "boost envelope" that fades 1→0.
+                voice.gateEnvelope *= decayCoeff;
+                const float envGain = 1.0f + voice.gateEnvelope * (maxBoost - 1.0f);
+
+                sliceL *= envGain;
+                sliceR *= envGain;
             }
 
             // STUTTER: micro-loop buffer repeat. Captures a tiny window
@@ -5376,7 +6088,22 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                     sliceL = sL;
                     sliceR = sR;
                     if (++voice.stutterReadPos >= voice.stutterLoopLen)
+                    {
                         voice.stutterReadPos = 0;
+
+                        // v0.5.0 — stutter window modes
+                        if (voice.voiceStutterWindow == 1 && voice.totalSamples > 0)
+                        {
+                            // Decaying: shrink loop by ~10% each cycle (min 64 samples)
+                            voice.stutterLoopLen = juce::jmax (64, (int)(voice.stutterLoopLen * 0.88f));
+                        }
+                        else if (voice.voiceStutterWindow == 2 && voice.totalSamples > 0)
+                        {
+                            // Growing: grow loop by ~15% each cycle (max = buffer size - 1)
+                            voice.stutterLoopLen = juce::jmin (PlaybackVoice::kStutterBufSize - 1,
+                                                               (int)(voice.stutterLoopLen * 1.18f));
+                        }
+                    }
                 }
             }
 
@@ -5387,34 +6114,83 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             // bury.
             if (voice.voiceChaos > 0.0001f)
             {
-                const float rollThresh = voice.voiceChaos * voice.voiceChaos * 0.25f;
-                if (rng.nextFloat() < rollThresh)
+                const float chaosAmt = voice.voiceChaos;
+
+                switch (voice.voiceChaosDistribution)
                 {
-                    const int action = rng.nextInt (4);
-                    if (action == 0)
+                    default:
+                    case 0:  // Uniform — original behaviour
                     {
-                        // Hold — repeat the most recent sample pair.
-                        sliceL = voice.chaosHeldL;
-                        sliceR = voice.chaosHeldR;
+                        const float rollThresh = chaosAmt * chaosAmt * 0.25f;
+                        if (rng.nextFloat() < rollThresh)
+                        {
+                            const int action = rng.nextInt (4);
+                            if (action == 0)
+                            {
+                                sliceL = voice.chaosHeldL;
+                                sliceR = voice.chaosHeldR;
+                            }
+                            else if (action == 1)
+                            {
+                                sliceL = 0.0f;
+                                sliceR = 0.0f;
+                            }
+                            else if (action == 2)
+                            {
+                                sliceL = -sliceL;
+                                sliceR = -sliceR;
+                            }
+                            else
+                            {
+                                voice.readPos += (double) (rng.nextInt (32) - 16);
+                            }
+                        }
+                        break;
                     }
-                    else if (action == 1)
+                    case 1:  // Gaussian — clustered centre, occasional wild spikes
                     {
-                        // Drop to zero.
-                        sliceL = 0.0f;
-                        sliceR = 0.0f;
+                        // Box-Muller: generate gaussian from two uniforms
+                        const float u1 = juce::jmax (0.0001f, rng.nextFloat());
+                        const float u2 = rng.nextFloat();
+                        const float gauss = std::sqrt (-2.0f * std::log (u1)) * std::cos (juce::MathConstants<float>::twoPi * u2);
+                        const float rollThresh = chaosAmt * chaosAmt * 0.15f;
+                        if (std::abs (gauss) * rollThresh > rng.nextFloat())
+                        {
+                            // Higher gauss values = wilder action
+                            if (std::abs (gauss) > 2.0f)
+                                voice.readPos += (double) (rng.nextInt (64) - 32);
+                            else if (std::abs (gauss) > 1.0f)
+                                { sliceL = -sliceL; sliceR = -sliceR; }
+                            else
+                                { sliceL = voice.chaosHeldL; sliceR = voice.chaosHeldR; }
+                        }
+                        break;
                     }
-                    else if (action == 2)
+                    case 2:  // Drunk Walk — Brownian motion, smooth wandering
                     {
-                        // Flip polarity.
-                        sliceL = -sliceL;
-                        sliceR = -sliceR;
+                        const float step = (rng.nextFloat() - 0.5f) * chaosAmt * 0.1f;
+                        voice.chaosDrunkValue = juce::jlimit (-1.0f, 1.0f, voice.chaosDrunkValue + step);
+                        const float drunk = voice.chaosDrunkValue;
+                        // Apply as a smooth pitch/gain modulation rather than glitchy actions
+                        const float gainMod = 1.0f + drunk * chaosAmt * 0.5f;
+                        sliceL *= gainMod;
+                        sliceR *= gainMod;
+                        // Subtle read position drift
+                        voice.readPos += (double) drunk * (double) chaosAmt * 0.5;
+                        break;
                     }
-                    else
+                    case 3:  // Bipolar Snap — hard ±1 only, dramatic on/off glitching
                     {
-                        // Read-jump: yank readPos forward by a random
-                        // 1..32 samples so subsequent samples pull
-                        // from a wrong-phase part of the buffer.
-                        voice.readPos += (double) (rng.nextInt (32) - 16);
+                        const float rollThresh = chaosAmt * chaosAmt * 0.3f;
+                        if (rng.nextFloat() < rollThresh)
+                        {
+                            // Binary: either full mute or full polarity flip
+                            if (rng.nextBool())
+                                { sliceL = 0.0f; sliceR = 0.0f; }
+                            else
+                                { sliceL = -sliceL; sliceR = -sliceR; }
+                        }
+                        break;
                     }
                 }
                 voice.chaosHeldL = sliceL;
@@ -5425,8 +6201,46 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             // judder retrigger boundaries, so within a single sub-hit
             // the gain is constant — which gives the discrete
             // tape-echo-step feel rather than a smooth envelope.
-            sliceL *= voice.currentGain;
-            sliceR *= voice.currentGain;
+            //
+            // v0.6.0 — Decay curve shapes the overall voice envelope:
+            //   Linear (0):      default — flat gain per judder step
+            //   Exponential (1): faster initial drop, slower tail
+            //   Logarithmic (2): sustains then drops sharply at end
+            //   Gate (3):        full volume, instant cut (no fade)
+            {
+                float envGain = voice.currentGain;
+                if (voice.voiceDecayCurve != 0 && voice.totalSamples > 0)
+                {
+                    const float progress = 1.0f - (float) voice.samplesRemaining
+                                                  / (float) voice.totalSamples;
+                    switch (voice.voiceDecayCurve)
+                    {
+                        case 1:  // Exponential — fast drop, slow tail
+                        {
+                            // Reshape: gain = currentGain * (1 - progress)^2
+                            const float curve = (1.0f - progress) * (1.0f - progress);
+                            envGain = voice.currentGain * curve;
+                            break;
+                        }
+                        case 2:  // Logarithmic — sustains then drops
+                        {
+                            // Reshape: gain = currentGain * sqrt(1 - progress)
+                            const float curve = std::sqrt (juce::jmax (0.0f, 1.0f - progress));
+                            envGain = voice.currentGain * curve;
+                            break;
+                        }
+                        case 3:  // Gate — full volume, no fade
+                        {
+                            envGain = 1.0f;
+                            break;
+                        }
+                        default:
+                            break;
+                    }
+                }
+                sliceL *= envGain;
+                sliceR *= envGain;
+            }
 
             // v0.30 — anti-click micro-fade. Ramps 0→1 over
             // kAntiClickSamples at voice start, and 1→0 at voice end,
@@ -5463,43 +6277,87 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             double rateMod = 1.0;
             if (voice.voiceTape > 0.0001f)
             {
-                // Scale the knob so full travel = old 75%.  Bottom half
-                // stays gentle for pad wow; top quarter adds real depth.
-                const float t = voice.voiceTape * 0.75f;
+                // v0.7.0 — squared curve so low knob values are much more
+                // subtle. At 10% knob the deviation is now ~10x gentler than
+                // before; full clockwise is unchanged.
+                const float t = voice.voiceTape * voice.voiceTape * 0.75f;
 
-                // Slow drift (wow): 0.7 Hz, up to +/-1.65% rate deviation at max
-                const double wowHz = 0.7;
-                voice.tapeWowPhase += wowHz * juce::MathConstants<double>::twoPi / sampleRate;
-                if (voice.tapeWowPhase > juce::MathConstants<double>::twoPi)
-                    voice.tapeWowPhase -= juce::MathConstants<double>::twoPi;
-                rateMod += std::sin (voice.tapeWowPhase) * (double) t * 0.03;
+                // Mode-aware wow/flutter blend
+                float wowAmount = 1.0f;       // multiplier on wow contribution
+                float flutterGate = 0.3f;     // knob threshold where flutter kicks in
+                float wowDepth = 0.03;        // wow deviation at max
+                float flutterDepth = 0.12;    // flutter deviation at max
 
-                // Fast wobble (flutter): 7 Hz, fades in above ~55% of the
-                // knob (which is 0.3 after scaling). Gentler ceiling.
-                const float flutterAmt = juce::jmax (0.0f, (t - 0.3f) / 0.25f);
+                switch (voice.voiceTapeMode)
+                {
+                    default:
+                    case 0:  // Classic — default blend
+                        break;
+                    case 1:  // Wow Only — no flutter
+                        flutterGate = 99.0f;  // flutter never kicks in
+                        wowDepth = 0.045;     // slightly wider wow range
+                        break;
+                    case 2:  // Flutter Only — no wow
+                        wowAmount = 0.0f;
+                        flutterGate = 0.0f;   // flutter from zero
+                        flutterDepth = 0.15;
+                        break;
+                    case 3:  // Extreme — both maxed with wider deviation
+                        wowDepth = 0.06;
+                        flutterGate = 0.1f;
+                        flutterDepth = 0.25;
+                        break;
+                }
+
+                // Slow drift (wow)
+                if (wowAmount > 0.0f)
+                {
+                    const double wowHz = 0.7;
+                    voice.tapeWowPhase += wowHz * juce::MathConstants<double>::twoPi / sampleRate;
+                    if (voice.tapeWowPhase > juce::MathConstants<double>::twoPi)
+                        voice.tapeWowPhase -= juce::MathConstants<double>::twoPi;
+                    rateMod += std::sin (voice.tapeWowPhase) * (double) t * wowDepth * (double) wowAmount;
+                }
+
+                // Fast wobble (flutter)
+                const float flutterAmt = juce::jmax (0.0f, (t - flutterGate) / 0.25f);
                 if (flutterAmt > 0.0001f)
                 {
                     const double flutterHz = 7.0;
                     voice.tapeFlutterPhase += flutterHz * juce::MathConstants<double>::twoPi / sampleRate;
                     if (voice.tapeFlutterPhase > juce::MathConstants<double>::twoPi)
                         voice.tapeFlutterPhase -= juce::MathConstants<double>::twoPi;
-                    rateMod += std::sin (voice.tapeFlutterPhase) * (double) flutterAmt * 0.12;
+                    rateMod += std::sin (voice.tapeFlutterPhase) * (double) flutterAmt * flutterDepth;
                 }
             }
 
-            // VARISPEED: DJ brake/spindown. The slice starts at full
-            // speed and decelerates to a stop (or vice versa). The knob
+            // VARISPEED: mode-aware tempo modulation. The slice starts at full
+            // speed and varies according to the selected curve. The knob
             // controls the depth: low = subtle slowdown, high = full
             // stop by the end. Negative rate (reversed) is preserved.
+            // v0.5.0 — mode-aware branching based on voiceVarispeedCurve.
             if (voice.voiceVarispeed > 0.0001f && voice.totalSamples > 0)
             {
                 // Progress through the slice: 0 = start, 1 = end
                 const float progress = 1.0f - (float) voice.samplesRemaining
                                               / (float) voice.totalSamples;
-                // Deceleration curve: 1.0 at start → (1-varispeed) at end.
-                // Quadratic easing for a natural feel.
                 const float vs = voice.voiceVarispeed;
-                const float speedMult = 1.0f - vs * progress * progress;
+                float curve;
+
+                switch (voice.voiceVarispeedCurve)
+                {
+                    default:
+                    case 0:  // Linear — constant deceleration
+                        curve = progress;
+                        break;
+                    case 1:  // Exponential — DJ brake (fast then crawl)
+                        curve = progress * progress;
+                        break;
+                    case 2:  // Sudden — full speed then drop at end
+                        curve = progress < 0.8f ? 0.0f : (progress - 0.8f) * 5.0f;
+                        break;
+                }
+                const float speedMult = 1.0f - vs * curve;
                 rateMod *= (double) juce::jmax (0.01f, speedMult);
             }
 
@@ -5536,11 +6394,82 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                     voice.judderXfadeRemaining = PlaybackVoice::kJudderXfadeSamples;
 
                     voice.readPos         = voice.retrigStartPos;
-                    voice.rate           *= voice.slideFactor; // slide scales magnitude,
-                                                               // sign preserved → reverse slides too
+
+                    // SLIDE: mode-aware curve applied on each judder retrig.
+                    // v0.5.0 — voiceSlideCurve shapes how the slide pitch bend
+                    // evolves across judder hits.
+                    if (voice.juddersRemaining > 1)
+                    {
+                        // Progress through the judder sequence (not the audio):
+                        // 0 = first judder, 1 = last judder
+                        const int totalJudders = (int) voice.juddersRemaining;  // remaining + 1 for current
+                        const int judderIdx = totalJudders - (int) voice.juddersRemaining;
+                        const float progress = (totalJudders > 1)
+                            ? (float) judderIdx / (float) (totalJudders - 1)
+                            : 0.0f;
+
+                        float shaped;
+                        switch (voice.voiceSlideCurve)
+                        {
+                            default:
+                            case 0:  // Linear — consistent slide per judder
+                                shaped = progress;
+                                break;
+                            case 1:  // Exponential — accelerating slide
+                                shaped = progress * progress;
+                                break;
+                            case 2:  // Log — decelerating slide (front-loaded)
+                                shaped = 1.0f - (1.0f - progress) * (1.0f - progress);
+                                break;
+                            case 3:  // S-Curve — slow-fast-slow envelope
+                                shaped = progress < 0.5f
+                                       ? 2.0f * progress * progress
+                                       : 1.0f - 2.0f * (1.0f - progress) * (1.0f - progress);
+                                break;
+                        }
+                        // Interpolate between 1.0 (start) and slideFactor (end)
+                        const double slideNow = 1.0 + (voice.slideFactor - 1.0) * (double) shaped;
+                        voice.rate *= slideNow;
+                    }
+                    else
+                    {
+                        // Single judder, apply full slide
+                        voice.rate *= voice.slideFactor;
+                    }
+
                     voice.currentGain    *= voice.decayPerJudder;
                     voice.gateEnvelope    = 1.0f;  // v0.22 — LPG re-ping on each judder hit
-                    voice.judderCountdown = voice.judderIntervalSamples;
+
+                    // v0.5.0 — Judder shape determines next interval
+                    switch (voice.voiceJudderShape)
+                    {
+                        default:
+                        case 0:  // Even — fixed interval
+                            voice.judderCountdown = voice.judderIntervalSamples;
+                            break;
+                        case 1:  // Accelerating — intervals shrink
+                        {
+                            const int total = voice.totalSamples;
+                            const int remaining = voice.juddersRemaining;
+                            // Progressive shortening: each interval is shorter than the last
+                            const float ratio = (remaining > 0) ? (float) remaining / (float) (remaining + 1) : 0.5f;
+                            voice.judderCountdown = juce::jmax (64, (int) (voice.judderIntervalSamples * ratio * 1.5f));
+                            break;
+                        }
+                        case 2:  // Decelerating — intervals grow (bouncing ball)
+                        {
+                            const int remaining = voice.juddersRemaining;
+                            const float ratio = (remaining > 0) ? (float) (remaining + 2) / (float) (remaining + 1) : 2.0f;
+                            voice.judderCountdown = juce::jmax (64, (int) (voice.judderIntervalSamples * ratio * 0.7f));
+                            break;
+                        }
+                        case 3:  // Random — jittered timing
+                        {
+                            const float jitter = 0.5f + rng.nextFloat();  // 0.5x to 1.5x
+                            voice.judderCountdown = juce::jmax (64, (int) (voice.judderIntervalSamples * jitter));
+                            break;
+                        }
+                    }
                     voice.juddersRemaining--;
                 }
             }
@@ -5609,6 +6538,29 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             }
         }
 
+        // v0.5.0 — Recombine frequency split: add the untouched band
+        // back so that only one frequency region was processed by FX.
+        if (voiceActive && splitMode != 0)
+        {
+            sliceL += freqSplitDryL;
+            sliceR += freqSplitDryR;
+        }
+
+        // v0.5.0 — slice output peak ring (voice output post-FX, pre-mix).
+        {
+            float sPeak = voiceActive ? juce::jmax (std::abs (sliceL), std::abs (sliceR)) : 0.0f;
+            if (sPeak > slicePeakAccum)
+                slicePeakAccum = sPeak;
+            if (++slicePeakAccumCount >= kPeakBucketSamples)
+            {
+                const int swp = slicePeakWritePos.load();
+                slicePeakRing[swp].store (slicePeakAccum);
+                slicePeakWritePos.store ((swp + 1) % kSlicePeakRingSize);
+                slicePeakAccum = 0.0f;
+                slicePeakAccumCount = 0;
+            }
+        }
+
         // 4. Combine voice into output + feedback injection.
         //
         //    Two modes depending on whether any global FX are active:
@@ -5653,30 +6605,114 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             // feedback is zero (no-op path). The next fire's
             // lookback window will blend with this residue and the
             // runaway-loop character emerges.
+            // v0.5.0 — mode-aware branching based on feedbackCharacter.
             if (! frozen && voice.voiceFeedback > 0.0001f)
             {
                 const float fb = voice.voiceFeedback;
-                cb[0][writePos] = softLimit (cb[0][writePos] + sliceL * fb);
+                float injectL = sliceL * fb;
+                float injectR = sliceR * fb;
+
+                switch (voice.voiceFeedbackCharacter)
+                {
+                    default:
+                    case 0:  // Clean — direct re-injection
+                        break;
+                    case 1:  // Filtered — LP at ~2 kHz before re-inject
+                    {
+                        // Simple one-pole LP: y += a * (x - y)
+                        // Coefficient for ~2kHz at any sample rate
+                        const float cutoff = 2000.0f;
+                        const float coeff = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * cutoff / (float) sampleRate);
+                        voice.feedbackFilterL += coeff * (injectL - voice.feedbackFilterL);
+                        voice.feedbackFilterR += coeff * (injectR - voice.feedbackFilterR);
+                        injectL = voice.feedbackFilterL;
+                        injectR = voice.feedbackFilterR;
+                        break;
+                    }
+                    case 2:  // Saturated — soft-clip before re-inject (thickens)
+                        injectL = std::tanh (injectL * 2.0f) * 0.7f;
+                        injectR = std::tanh (injectR * 2.0f) * 0.7f;
+                        break;
+                    case 3:  // Ducked — sidechain against input level
+                    {
+                        // Use the current input level to duck the feedback
+                        const float inputLevel = juce::jmax (std::abs (cb[0][writePos]),
+                                                              numChannels > 1 ? std::abs (cb[1][writePos]) : 0.0f);
+                        // Fast attack, slow release envelope follower
+                        const float attackCoeff = 0.01f;
+                        const float releaseCoeff = 0.0001f;
+                        if (inputLevel > voice.feedbackDuckEnv)
+                            voice.feedbackDuckEnv += attackCoeff * (inputLevel - voice.feedbackDuckEnv);
+                        else
+                            voice.feedbackDuckEnv += releaseCoeff * (inputLevel - voice.feedbackDuckEnv);
+                        // Duck: reduce feedback when input is loud
+                        const float duckGain = juce::jmax (0.05f, 1.0f - voice.feedbackDuckEnv * 3.0f);
+                        injectL *= duckGain;
+                        injectR *= duckGain;
+                        break;
+                    }
+                }
+
+                cb[0][writePos] = softLimit (cb[0][writePos] + injectL);
                 if (numChannels > 1)
-                    cb[1][writePos] = softLimit (cb[1][writePos] + sliceR * fb);
+                    cb[1][writePos] = softLimit (cb[1][writePos] + injectR);
             }
         }
 
         // 4a. SMEAR delay line. Always ticks so the tail keeps decaying
         //     after the voice ends. smearFeedAmount is updated at fire
         //     time so each Act's tail keeps its own character.
+        // v0.5.0 — mode-aware DSP branching based on smearCharacter.
         {
             auto* const* sb = smearBuffer.getArrayOfWritePointers();
             const float delayedL = sb[0][smearWritePos];
             const float delayedR = sb[1][smearWritePos];
 
-            const float fb = juce::jmin (0.85f, smearFeedAmount * 0.85f);
+            // Read the current scene's smear character
+            const int smearMode = scenes[selectedScene.load()].smearCharacter.load();
+
+            float processedL = delayedL;
+            float processedR = delayedR;
+
+            float fb;
+            switch (smearMode)
+            {
+                default:
+                case 0:  // Blur — standard delay feedback
+                    fb = juce::jmin (0.85f, smearFeedAmount * 0.85f);
+                    break;
+                case 1:  // Diffuse — allpass in feedback path
+                {
+                    fb = juce::jmin (0.85f, smearFeedAmount * 0.85f);
+                    const float apCoeff = 0.6f;
+                    // Simple allpass: out = -g*in + state; state = in + g*out
+                    float apOutL = -apCoeff * processedL + smearApStateL;
+                    smearApStateL = processedL + apCoeff * apOutL;
+                    float apOutR = -apCoeff * processedR + smearApStateR;
+                    smearApStateR = processedR + apCoeff * apOutR;
+                    processedL = apOutL;
+                    processedR = apOutR;
+                    break;
+                }
+                case 2:  // Freeze — infinite hold when smear is high
+                {
+                    const float freezeThresh = 0.4f;
+                    if (smearFeedAmount > freezeThresh)
+                    {
+                        const float freezeBlend = juce::jmin (1.0f, (smearFeedAmount - freezeThresh) / (1.0f - freezeThresh));
+                        fb = 0.85f + freezeBlend * 0.145f;  // ramps toward 0.995
+                    }
+                    else
+                        fb = juce::jmin (0.85f, smearFeedAmount * 0.85f);
+                    break;
+                }
+            }
 
             const float feedL = (voiceActive ? sliceL : 0.0f);
             const float feedR = (voiceActive ? sliceR : 0.0f);
 
-            sb[0][smearWritePos] = feedL + delayedL * fb;
-            sb[1][smearWritePos] = feedR + delayedR * fb;
+            sb[0][smearWritePos] = feedL + processedL * fb;
+            sb[1][smearWritePos] = feedR + processedR * fb;
 
             const float sendLevel = smearFeedAmount * 0.7f;
             // Scale smear send by effective mix so MIX 0% = pure dry.
@@ -5712,57 +6748,107 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 }
             }
 
-            // TONE + RES (global) — same bipolar tilt EQ as per-voice
-            // but using the global SVF state so it's continuous.
+            // TONE + RES (global) — multi-mode filter using global SVF state.
+            // v0.5.0 — reads the selected Act's filter mode for consistency.
             if (gfxTone)
             {
                 const float toneVal = pTone->load();
                 const float resVal  = pRes ->load();
+                const int gfMode = scenes[selectedScene.load()].filterMode.load();
 
-                if (toneVal < 0.499f)
+                auto softClip = [] (float x) -> float
                 {
-                    const float toneNorm = toneVal * 2.0f;
+                    const float x2 = x * x;
+                    return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+                };
+
+                if (gfMode == loopsab::kFilterTilt)
+                {
+                    // Legacy Tilt behaviour
+                    if (toneVal < 0.499f)
+                    {
+                        const float toneNorm = toneVal * 2.0f;
+                        const double cutoffHz = juce::jlimit (
+                            30.0, sampleRate * 0.45,
+                            350.0 * std::pow (60.0, (double) toneNorm));
+                        const double fRaw = 2.0 * std::sin (juce::MathConstants<double>::pi
+                                                             * cutoffHz / sampleRate);
+                        const float f = (float) juce::jlimit (0.0, 0.48, fRaw);
+                        const float q = juce::jmax (0.005f, 1.0f - resVal);
+                        {
+                            const float bp = softClip (globalSvfBandL);
+                            const float high = io[0][i] - globalSvfLowL - q * bp;
+                            globalSvfBandL += f * high;
+                            globalSvfLowL  += f * softClip (globalSvfBandL);
+                            io[0][i] = globalSvfLowL;
+                        }
+                        if (numChannels > 1)
+                        {
+                            const float bp = softClip (globalSvfBandR);
+                            const float high = io[1][i] - globalSvfLowR - q * bp;
+                            globalSvfBandR += f * high;
+                            globalSvfLowR  += f * softClip (globalSvfBandR);
+                            io[1][i] = globalSvfLowR;
+                        }
+                    }
+                    else if (toneVal > 0.501f)
+                    {
+                        const float airAmt = (toneVal - 0.5f) * 2.0f;
+                        const float hpCoeff = 0.7f;
+                        globalSvfLowL += hpCoeff * (io[0][i] - globalSvfLowL);
+                        const float hfL = io[0][i] - globalSvfLowL;
+                        io[0][i] += hfL * airAmt * 3.0f;
+                        if (numChannels > 1)
+                        {
+                            globalSvfLowR += hpCoeff * (io[1][i] - globalSvfLowR);
+                            const float hfR = io[1][i] - globalSvfLowR;
+                            io[1][i] += hfR * airAmt * 3.0f;
+                        }
+                    }
+                }
+                else
+                {
+                    // LP / HP / BP: full-range resonant SVF
                     const double cutoffHz = juce::jlimit (
-                        30.0, sampleRate * 0.45,
-                        350.0 * std::pow (60.0, (double) toneNorm));
+                        20.0, sampleRate * 0.45,
+                        20.0 * std::pow (1000.0, (double) toneVal));
                     const double fRaw = 2.0 * std::sin (juce::MathConstants<double>::pi
                                                          * cutoffHz / sampleRate);
                     const float f = (float) juce::jlimit (0.0, 0.48, fRaw);
-                    const float q = juce::jmax (0.005f, 1.0f - resVal);
+                    const float q = juce::jmax (0.005f, 1.0f - resVal * 0.995f);
 
-                    auto softClip = [] (float x) -> float
-                    {
-                        const float x2 = x * x;
-                        return x * (27.0f + x2) / (27.0f + 9.0f * x2);
-                    };
+                    // Left
                     {
                         const float bp = softClip (globalSvfBandL);
                         const float high = io[0][i] - globalSvfLowL - q * bp;
                         globalSvfBandL += f * high;
                         globalSvfLowL  += f * softClip (globalSvfBandL);
-                        io[0][i] = globalSvfLowL;
                     }
+                    // Right
                     if (numChannels > 1)
                     {
                         const float bp = softClip (globalSvfBandR);
                         const float high = io[1][i] - globalSvfLowR - q * bp;
                         globalSvfBandR += f * high;
                         globalSvfLowR  += f * softClip (globalSvfBandR);
-                        io[1][i] = globalSvfLowR;
                     }
-                }
-                else if (toneVal > 0.501f)
-                {
-                    const float airAmt = (toneVal - 0.5f) * 2.0f;
-                    const float hpCoeff = 0.7f;
-                    globalSvfLowL += hpCoeff * (io[0][i] - globalSvfLowL);
-                    const float hfL = io[0][i] - globalSvfLowL;
-                    io[0][i] += hfL * airAmt * 3.0f;
-                    if (numChannels > 1)
+
+                    switch (gfMode)
                     {
-                        globalSvfLowR += hpCoeff * (io[1][i] - globalSvfLowR);
-                        const float hfR = io[1][i] - globalSvfLowR;
-                        io[1][i] += hfR * airAmt * 3.0f;
+                        default:
+                        case loopsab::kFilterLP:
+                            io[0][i] = globalSvfLowL;
+                            if (numChannels > 1) io[1][i] = globalSvfLowR;
+                            break;
+                        case loopsab::kFilterHP:
+                            io[0][i] = io[0][i] - globalSvfLowL - q * softClip (globalSvfBandL);
+                            if (numChannels > 1)
+                                io[1][i] = io[1][i] - globalSvfLowR - q * softClip (globalSvfBandR);
+                            break;
+                        case loopsab::kFilterBP:
+                            io[0][i] = globalSvfBandL;
+                            if (numChannels > 1) io[1][i] = globalSvfBandR;
+                            break;
                     }
                 }
             }
@@ -5896,7 +6982,8 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             if (sceneForEngine >= 0 && sceneForEngine < kNumScenes)
             {
                 outputStage.setTarget (scenes[sceneForEngine].engineStage.load(),
-                                       scenes[sceneForEngine].engineMix  .load());
+                                       scenes[sceneForEngine].engineMix  .load(),
+                                       scenes[sceneForEngine].engineIntensity.load());
             }
 
             float L = io[0][i];
@@ -5906,12 +6993,39 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             if (numChannels > 1) io[1][i] = R;
         }
 
+        // v0.6.0 — NaN/inf safety net. If any DSP path produces garbage
+        // (division by near-zero, unclamped sqrt, feedback runaway, etc.)
+        // replace the sample with silence rather than sending poison
+        // downstream where it could crash the DAW or blow speakers.
+        {
+            float& sL = io[0][i];
+            if (! std::isfinite (sL)) sL = 0.0f;
+            if (numChannels > 1)
+            {
+                float& sR = io[1][i];
+                if (! std::isfinite (sR)) sR = 0.0f;
+            }
+        }
+
         // 5. Advance the circular write head. Skipped on freeze so the
         //    buffer contents stay locked to the moment of freeze.
         if (! frozen)
         {
             if (++writePos >= circularBufferSize)
                 writePos = 0;
+        }
+    }
+
+    // v0.7.0 — Cage 4'33" easter egg: if any active scene has the
+    // cageSilence flag set, zero the entire output buffer so the user
+    // hears absolute silence — a faithful reproduction of the piece.
+    for (int si = 0; si < kNumScenes; ++si)
+    {
+        if (scenes[si].cageSilence.load (std::memory_order_relaxed))
+        {
+            for (int ch = 0; ch < numChannels; ++ch)
+                juce::FloatVectorOperations::clear (io[ch], numSamples);
+            break;
         }
     }
 
@@ -6054,12 +7168,34 @@ void LoopSaboteurProcessor::getStateInformation (juce::MemoryBlock& destData)
         s->setAttribute ("presetIdx", scenePresetIdx[i].load());  // BUG 1 fix: serialize per-scene preset tracking
 
         // v0.41 — per-Act ENGINE bundle.
-        s->setAttribute ("engineStage", scenes[i].engineStage.load());
-        s->setAttribute ("engineMix",   (double) scenes[i].engineMix.load());
-        s->setAttribute ("interpMode",  scenes[i].interpMode .load());
+        s->setAttribute ("engineStage",     scenes[i].engineStage.load());
+        s->setAttribute ("engineMix",       (double) scenes[i].engineMix.load());
+        s->setAttribute ("engineIntensity", (double) scenes[i].engineIntensity.load());
+        s->setAttribute ("interpMode",      scenes[i].interpMode .load());
         s->setAttribute ("crushAA",     scenes[i].crushAA    .load() ? 1 : 0);
         s->setAttribute ("crushMu",     scenes[i].crushMu    .load() ? 1 : 0);
         s->setAttribute ("crushAll",    scenes[i].crushAll   .load() ? 1 : 0);
+
+        // v0.5.0 — per-Act filter mode + frequency split.
+        s->setAttribute ("filterMode",    scenes[i].filterMode   .load());
+        s->setAttribute ("freqSplitMode", scenes[i].freqSplitMode.load());
+        s->setAttribute ("freqSplitHz",   (double) scenes[i].freqSplitHz.load());
+        s->setAttribute ("driveType",      scenes[i].driveType.load());
+        s->setAttribute ("foldTopology",   scenes[i].foldTopology.load());
+        s->setAttribute ("shimmerOctave",  scenes[i].shimmerOctave.load());
+        s->setAttribute ("smearCharacter", scenes[i].smearCharacter.load());
+        s->setAttribute ("stutterWindow",  scenes[i].stutterWindow.load());
+        s->setAttribute ("varispeedCurve", scenes[i].varispeedCurve.load());
+        s->setAttribute ("slideCurve",     scenes[i].slideCurve.load());
+        s->setAttribute ("reverseMode",    scenes[i].reverseMode.load());
+        s->setAttribute ("tapeMode",       scenes[i].tapeMode.load());
+        s->setAttribute ("ringModWave",    scenes[i].ringModWave.load());
+        s->setAttribute ("chaosDistribution", scenes[i].chaosDistribution.load());
+        s->setAttribute ("feedbackCharacter", scenes[i].feedbackCharacter.load());
+        s->setAttribute ("stretchMode",    scenes[i].stretchMode.load());
+        s->setAttribute ("judderShape",    scenes[i].judderShape.load());
+        s->setAttribute ("lookbackBehaviour", scenes[i].lookbackBehaviour.load());
+        s->setAttribute ("decayCurve",    scenes[i].decayCurve.load());
 
         // v0.42 — per-Act stereo mode / FX-on-Dry / ring mod quantise.
         s->setAttribute ("stereoMode",     scenes[i].stereoMode    .load());
@@ -6142,7 +7278,7 @@ void LoopSaboteurProcessor::getStateInformation (juce::MemoryBlock& destData)
     engineEl->setAttribute ("interpMode",  scenes[0].interpMode .load());
     engineEl->setAttribute ("outputStage", scenes[0].engineStage.load());
     engineEl->setAttribute ("outputMix",   (double) scenes[0].engineMix.load());
-    engineEl->setAttribute ("recallEngine", presetRecallEngine.load() ? 1 : 0);
+    engineEl->setAttribute ("outputIntensity", (double) scenes[0].engineIntensity.load());
 
     // v0.30 — LFO modulation settings. Now per-Act: 8 Acts × 4 LFOs = 32 total.
     for (int si = 0; si < kNumScenes; ++si)
@@ -6167,6 +7303,8 @@ void LoopSaboteurProcessor::getStateInformation (juce::MemoryBlock& destData)
             // so absent attributes restore silently to "no cross-mod".
             lfoEl->setAttribute ("xTarget", lfos[si][li].crossTargetLfo.load());
             lfoEl->setAttribute ("xDepth",  (double) lfos[si][li].crossDepth.load());
+            // v0.50 — envelope follower sensitivity gain
+            lfoEl->setAttribute ("envFollowGain", lfos[si][li].envFollowGain.load());
         }
     }
 
@@ -6218,34 +7356,34 @@ void LoopSaboteurProcessor::setStateInformation (const void* data, int sizeInByt
         {
             const int i = s->getIntAttribute ("i", -1);
             if (i < 0 || i >= kNumScenes) continue;
-            scenes[i].lookbackIdx  .store (s->getIntAttribute ("lookback",  3));
-            scenes[i].rateIdx      .store (s->getIntAttribute ("rate",      3));
-            scenes[i].judderCount  .store (s->getIntAttribute ("judder",    1));
-            scenes[i].judderDivIdx .store (s->getIntAttribute ("judderDiv", 3));
+            scenes[i].lookbackIdx  .store (juce::jlimit (0, 9,  s->getIntAttribute ("lookback",  3)));
+            scenes[i].rateIdx      .store (juce::jlimit (0, 5,  s->getIntAttribute ("rate",      3)));
+            scenes[i].judderCount  .store (juce::jlimit (1, kMaxJudder, s->getIntAttribute ("judder", 1)));
+            scenes[i].judderDivIdx .store (juce::jlimit (0, 11, s->getIntAttribute ("judderDiv", 3)));
             scenes[i].pitchSt      .store ((float) s->getDoubleAttribute ("pitch",   0.0));
             scenes[i].slideSt      .store ((float) s->getDoubleAttribute ("slide",   0.0));
-            scenes[i].decay        .store ((float) s->getDoubleAttribute ("decay",   0.8));
-            scenes[i].reverseChance.store ((float) s->getDoubleAttribute ("reverse", 0.0));
-            scenes[i].crunch       .store ((float) s->getDoubleAttribute ("crunch",  0.0));
-            scenes[i].crushRate    .store ((float) s->getDoubleAttribute ("crushrate", 0.0));
-            scenes[i].mix          .store ((float) s->getDoubleAttribute ("mix",     0.5));
-            scenes[i].divisionIdx  .store (s->getIntAttribute ("division", 2));
-            scenes[i].chance       .store ((float) s->getDoubleAttribute ("chance",  1.0));
-            scenes[i].drive        .store ((float) s->getDoubleAttribute ("drive",    0.0));
-            scenes[i].tone         .store ((float) s->getDoubleAttribute ("tone",     0.5));
-            scenes[i].feedback     .store ((float) s->getDoubleAttribute ("feedback", 0.0));
-            scenes[i].tape         .store ((float) s->getDoubleAttribute ("tape",     0.0));
-            scenes[i].ringMod      .store ((float) s->getDoubleAttribute ("ringmod",  0.0));
-            scenes[i].varispeed    .store ((float) s->getDoubleAttribute ("varispeed",0.0));
-            scenes[i].stereo       .store ((float) s->getDoubleAttribute ("stereo",   0.0));
-            scenes[i].stretch      .store ((float) s->getDoubleAttribute ("stretch",  0.0));
-            scenes[i].shimmer      .store ((float) s->getDoubleAttribute ("shimmer",  0.0));
-            scenes[i].res          .store ((float) s->getDoubleAttribute ("res",      0.0));
-            scenes[i].fold         .store ((float) s->getDoubleAttribute ("fold",     0.0));
-            scenes[i].gate         .store ((float) s->getDoubleAttribute ("gate",     0.0));
-            scenes[i].smear        .store ((float) s->getDoubleAttribute ("smear",    0.0));
-            scenes[i].stutter      .store ((float) s->getDoubleAttribute ("stutter",  0.0));
-            scenes[i].chaos        .store ((float) s->getDoubleAttribute ("chaos",    0.0));
+            scenes[i].decay        .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("decay", 0.8)));
+            scenes[i].reverseChance.store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("reverse", 0.0)));
+            scenes[i].crunch       .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("crunch",  0.0)));
+            scenes[i].crushRate    .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("crushrate", 0.0)));
+            scenes[i].mix          .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("mix",     0.5)));
+            scenes[i].divisionIdx  .store (juce::jlimit (0, 9,  s->getIntAttribute ("division", 2)));
+            scenes[i].chance       .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("chance",  1.0)));
+            scenes[i].drive        .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("drive",    0.0)));
+            scenes[i].tone         .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("tone",     0.5)));
+            scenes[i].feedback     .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("feedback", 0.0)));
+            scenes[i].tape         .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("tape",     0.0)));
+            scenes[i].ringMod      .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("ringmod",  0.0)));
+            scenes[i].varispeed    .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("varispeed",0.0)));
+            scenes[i].stereo       .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("stereo",   0.0)));
+            scenes[i].stretch      .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("stretch",  0.0)));
+            scenes[i].shimmer      .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("shimmer",  0.0)));
+            scenes[i].res          .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("res",      0.0)));
+            scenes[i].fold         .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("fold",     0.0)));
+            scenes[i].gate         .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("gate",     0.0)));
+            scenes[i].smear        .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("smear",    0.0)));
+            scenes[i].stutter      .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("stutter",  0.0)));
+            scenes[i].chaos        .store (juce::jlimit (0.0f, 1.0f, (float) s->getDoubleAttribute ("chaos",    0.0)));
             sceneStored[i]         .store (s->getIntAttribute ("stored", 0) != 0);
             scenePresetIdx[i]      .store (s->getIntAttribute ("presetIdx", -1));  // BUG 1 fix: deserialize per-scene preset tracking (-1 = default if absent)
 
@@ -6261,6 +7399,8 @@ void LoopSaboteurProcessor::setStateInformation (const void* data, int sizeInByt
             scenes[i].engineMix  .store (juce::jlimit (0.0f, 1.0f,
                                                         (float) s->getDoubleAttribute ("engineMix",
                                                                                         (double) scenes[i].engineMix.load())));
+            scenes[i].engineIntensity.store (juce::jlimit (0.0f, 1.0f,
+                                                        (float) s->getDoubleAttribute ("engineIntensity", 0.5)));
             scenes[i].interpMode .store (juce::jlimit (0, (int) loopsab::kNumInterpModes - 1,
                                                         s->getIntAttribute ("interpMode",
                                                                              scenes[i].interpMode.load())));
@@ -6270,6 +7410,49 @@ void LoopSaboteurProcessor::setStateInformation (const void* data, int sizeInByt
                                                               scenes[i].crushMu.load() ? 1 : 0) != 0);
             scenes[i].crushAll   .store (s->getIntAttribute ("crushAll",
                                                               scenes[i].crushAll.load() ? 1 : 0) != 0);
+
+            // v0.5.0 — per-Act filter mode + frequency split.
+            scenes[i].filterMode   .store (juce::jlimit (0, (int) loopsab::kNumFilterModes - 1,
+                                                          s->getIntAttribute ("filterMode",
+                                                                               scenes[i].filterMode.load())));
+            scenes[i].freqSplitMode.store (juce::jlimit (0, 2,
+                                                          s->getIntAttribute ("freqSplitMode",
+                                                                               scenes[i].freqSplitMode.load())));
+            scenes[i].freqSplitHz  .store (juce::jlimit (80.0f, 8000.0f,
+                                                          (float) s->getDoubleAttribute ("freqSplitHz",
+                                                                                          (double) scenes[i].freqSplitHz.load())));
+            scenes[i].driveType.store (juce::jlimit (0, (int) loopsab::kNumDriveTypes - 1,
+                                                     s->getIntAttribute ("driveType", scenes[i].driveType.load())));
+            scenes[i].foldTopology.store (juce::jlimit (0, (int) loopsab::kNumFoldTopologies - 1,
+                                                        s->getIntAttribute ("foldTopology", scenes[i].foldTopology.load())));
+            scenes[i].shimmerOctave.store (juce::jlimit (0, (int) loopsab::kNumShimmerOctaves - 1,
+                                                         s->getIntAttribute ("shimmerOctave", scenes[i].shimmerOctave.load())));
+            scenes[i].smearCharacter.store (juce::jlimit (0, (int) loopsab::kNumSmearCharacters - 1,
+                                                          s->getIntAttribute ("smearCharacter", scenes[i].smearCharacter.load())));
+            scenes[i].stutterWindow.store (juce::jlimit (0, (int) loopsab::kNumStutterWindows - 1,
+                                                         s->getIntAttribute ("stutterWindow", scenes[i].stutterWindow.load())));
+            scenes[i].varispeedCurve.store (juce::jlimit (0, (int) loopsab::kNumVarispeedCurves - 1,
+                                                          s->getIntAttribute ("varispeedCurve", scenes[i].varispeedCurve.load())));
+            scenes[i].slideCurve.store (juce::jlimit (0, (int) loopsab::kNumSlideCurves - 1,
+                                                      s->getIntAttribute ("slideCurve", scenes[i].slideCurve.load())));
+            scenes[i].reverseMode.store (juce::jlimit (0, (int) loopsab::kNumReverseModes - 1,
+                                                       s->getIntAttribute ("reverseMode", scenes[i].reverseMode.load())));
+            scenes[i].tapeMode.store (juce::jlimit (0, (int) loopsab::kNumTapeModes - 1,
+                                                     s->getIntAttribute ("tapeMode", scenes[i].tapeMode.load())));
+            scenes[i].ringModWave.store (juce::jlimit (0, (int) loopsab::kNumRingModWaves - 1,
+                                                        s->getIntAttribute ("ringModWave", scenes[i].ringModWave.load())));
+            scenes[i].chaosDistribution.store (juce::jlimit (0, (int) loopsab::kNumChaosDistributions - 1,
+                                                             s->getIntAttribute ("chaosDistribution", scenes[i].chaosDistribution.load())));
+            scenes[i].feedbackCharacter.store (juce::jlimit (0, (int) loopsab::kNumFeedbackCharacters - 1,
+                                                             s->getIntAttribute ("feedbackCharacter", scenes[i].feedbackCharacter.load())));
+            scenes[i].stretchMode.store (juce::jlimit (0, (int) loopsab::kNumStretchModes - 1,
+                                                       s->getIntAttribute ("stretchMode", scenes[i].stretchMode.load())));
+            scenes[i].judderShape.store (juce::jlimit (0, (int) loopsab::kNumJudderShapes - 1,
+                                                       s->getIntAttribute ("judderShape", scenes[i].judderShape.load())));
+            scenes[i].lookbackBehaviour.store (juce::jlimit (0, (int) loopsab::kNumLookbackBehaviours - 1,
+                                                       s->getIntAttribute ("lookbackBehaviour", scenes[i].lookbackBehaviour.load())));
+            scenes[i].decayCurve.store (juce::jlimit (0, (int) loopsab::kNumDecayCurves - 1,
+                                                       s->getIntAttribute ("decayCurve", scenes[i].decayCurve.load())));
 
             // v0.42 — per-Act stereo / FX-on-Dry / ring mod quantise.
             // Defaults fall through to the current slot value, which was
@@ -6453,16 +7636,16 @@ void LoopSaboteurProcessor::setStateInformation (const void* data, int sizeInByt
                                                                               loopsab::kOutClean));
         const float wantedMix    = juce::jlimit (0.0f, 1.0f,
                                                   (float) engineEl->getDoubleAttribute ("outputMix", 1.0));
+        const float wantedIntensity = juce::jlimit (0.0f, 1.0f,
+                                                  (float) engineEl->getDoubleAttribute ("outputIntensity", 0.5));
         // The presetRecallEngine flag itself is always restored — it's a
         // user preference, not an Engine value. On session restore we
         // always apply the Engine values: they represent the user's own
         // saved state, not an incoming preset. The "Designed for X" badge
         // is only populated on explicit preset loads (see applyUserPreset).
         // v0.42 — previously we stashed designed-for here whenever
-        // recallEngine was false, but modern saves always write the Engine
-        // block for back-compat so the badge fired spuriously on every
-        // plain session reload.
-        presetRecallEngine.store (engineEl->getIntAttribute ("recallEngine", 0) != 0);
+        // v0.5.0 — presetRecallEngine removed; presets always include
+        // Engine+Character settings now.
 
         // v0.41 — broadcast the legacy single-engine bundle to every Act so
         // older (pre-v0.41) sessions reload identically. Per-Act values
@@ -6471,9 +7654,10 @@ void LoopSaboteurProcessor::setStateInformation (const void* data, int sizeInByt
         interpMode.store (wantedInterp);
         for (auto& sc : scenes)
         {
-            sc.interpMode .store (wantedInterp);
-            sc.engineStage.store (wantedStage);
-            sc.engineMix  .store (wantedMix);
+            sc.interpMode    .store (wantedInterp);
+            sc.engineStage   .store (wantedStage);
+            sc.engineMix     .store (wantedMix);
+            sc.engineIntensity.store (wantedIntensity);
         }
         // Clear designed-for — no preset has been loaded in this session
         // restore, so no "Designed for X" banner should be shown.
@@ -6509,6 +7693,8 @@ void LoopSaboteurProcessor::setStateInformation (const void* data, int sizeInByt
                                                          lfoEl->getIntAttribute ("xTarget", -1)));
         lfos[si][li].crossDepth    .store (juce::jlimit (-1.0f, 1.0f,
                                                          (float) lfoEl->getDoubleAttribute ("xDepth", 1.0)));
+        // v0.50 — envelope follower sensitivity gain
+        lfos[si][li].envFollowGain .store (juce::jlimit (1.0f, 10.0f, (float) lfoEl->getDoubleAttribute ("envFollowGain", 1.0)));
     }
 }
 
@@ -6564,12 +7750,34 @@ LoopSaboteurProcessor::serializeAct (int sceneIdx) const
     out->setAttribute ("chaos",    (double) s.chaos        .load());
 
     // v0.41 — per-Act ENGINE bundle.
-    out->setAttribute ("engineStage", s.engineStage.load());
-    out->setAttribute ("engineMix",   (double) s.engineMix.load());
-    out->setAttribute ("interpMode",  s.interpMode .load());
+    out->setAttribute ("engineStage",     s.engineStage.load());
+    out->setAttribute ("engineMix",       (double) s.engineMix.load());
+    out->setAttribute ("engineIntensity", (double) s.engineIntensity.load());
+    out->setAttribute ("interpMode",      s.interpMode .load());
     out->setAttribute ("crushAA",     s.crushAA    .load() ? 1 : 0);
     out->setAttribute ("crushMu",     s.crushMu    .load() ? 1 : 0);
     out->setAttribute ("crushAll",    s.crushAll   .load() ? 1 : 0);
+
+    // v0.5.0 — per-Act filter mode + frequency split.
+    out->setAttribute ("filterMode",    s.filterMode   .load());
+    out->setAttribute ("freqSplitMode", s.freqSplitMode.load());
+    out->setAttribute ("freqSplitHz",   (double) s.freqSplitHz.load());
+    out->setAttribute ("driveType",      s.driveType.load());
+    out->setAttribute ("foldTopology",   s.foldTopology.load());
+    out->setAttribute ("shimmerOctave",  s.shimmerOctave.load());
+    out->setAttribute ("smearCharacter", s.smearCharacter.load());
+    out->setAttribute ("stutterWindow",  s.stutterWindow.load());
+    out->setAttribute ("varispeedCurve", s.varispeedCurve.load());
+    out->setAttribute ("slideCurve",     s.slideCurve.load());
+    out->setAttribute ("reverseMode",    s.reverseMode.load());
+    out->setAttribute ("tapeMode",       s.tapeMode.load());
+    out->setAttribute ("ringModWave",    s.ringModWave.load());
+    out->setAttribute ("chaosDistribution", s.chaosDistribution.load());
+    out->setAttribute ("feedbackCharacter", s.feedbackCharacter.load());
+    out->setAttribute ("stretchMode",    s.stretchMode.load());
+    out->setAttribute ("judderShape",    s.judderShape.load());
+    out->setAttribute ("lookbackBehaviour", s.lookbackBehaviour.load());
+    out->setAttribute ("decayCurve",    s.decayCurve.load());
 
     // v0.42 — per-Act stereo mode + FX-on-Dry + ring mod quantise.
     out->setAttribute ("stereoMode",     s.stereoMode    .load());
@@ -6603,6 +7811,7 @@ LoopSaboteurProcessor::serializeAct (int sceneIdx) const
         e->setAttribute ("trigMode",  lfo.trigMode.load());
         e->setAttribute ("xTarget",   crossTgt);
         e->setAttribute ("xDepth",    (double) lfo.crossDepth.load());
+        e->setAttribute ("envFollowGain", (double) lfo.envFollowGain.load());
     }
     return out;
 }
@@ -6613,35 +7822,35 @@ bool LoopSaboteurProcessor::loadActFromXml (const juce::XmlElement& el, int targ
     if (targetIdx < 0 || targetIdx >= kNumScenes)              return false;
 
     auto& s = scenes[targetIdx];
-    s.divisionIdx  .store (el.getIntAttribute ("division",  2));
-    s.lookbackIdx  .store (el.getIntAttribute ("lookback",  3));
-    s.rateIdx      .store (el.getIntAttribute ("rate",      3));
+    s.divisionIdx  .store (juce::jlimit (0, 9,  el.getIntAttribute ("division",  2)));
+    s.lookbackIdx  .store (juce::jlimit (0, 9,  el.getIntAttribute ("lookback",  3)));
+    s.rateIdx      .store (juce::jlimit (0, 5,  el.getIntAttribute ("rate",      3)));
     s.judderCount  .store (juce::jlimit (1, kMaxJudder,
                                           el.getIntAttribute ("judder", 1)));
-    s.judderDivIdx .store (el.getIntAttribute ("judderDiv", 3));
+    s.judderDivIdx .store (juce::jlimit (0, 11, el.getIntAttribute ("judderDiv", 3)));
     s.pitchSt      .store ((float) el.getDoubleAttribute ("pitch",    0.0));
     s.slideSt      .store ((float) el.getDoubleAttribute ("slide",    0.0));
-    s.decay        .store ((float) el.getDoubleAttribute ("decay",    0.8));
-    s.reverseChance.store ((float) el.getDoubleAttribute ("reverse",  0.0));
-    s.crunch       .store ((float) el.getDoubleAttribute ("crunch",   0.0));
-    s.crushRate    .store ((float) el.getDoubleAttribute ("crushrate", 0.0));
-    s.mix          .store ((float) el.getDoubleAttribute ("mix",      0.5));
-    s.chance       .store ((float) el.getDoubleAttribute ("chance",   1.0));
-    s.drive        .store ((float) el.getDoubleAttribute ("drive",    0.0));
-    s.tone         .store ((float) el.getDoubleAttribute ("tone",     0.5));
-    s.feedback     .store ((float) el.getDoubleAttribute ("feedback", 0.0));
-    s.tape         .store ((float) el.getDoubleAttribute ("tape",     0.0));
-    s.ringMod      .store ((float) el.getDoubleAttribute ("ringmod",  0.0));
-    s.varispeed    .store ((float) el.getDoubleAttribute ("varispeed",0.0));
-    s.stereo       .store ((float) el.getDoubleAttribute ("stereo",   0.0));
-    s.stretch      .store ((float) el.getDoubleAttribute ("stretch",  0.0));
-    s.shimmer      .store ((float) el.getDoubleAttribute ("shimmer",  0.0));
-    s.res          .store ((float) el.getDoubleAttribute ("res",      0.0));
-    s.fold         .store ((float) el.getDoubleAttribute ("fold",     0.0));
-    s.gate         .store ((float) el.getDoubleAttribute ("gate",     0.0));
-    s.smear        .store ((float) el.getDoubleAttribute ("smear",    0.0));
-    s.stutter      .store ((float) el.getDoubleAttribute ("stutter",  0.0));
-    s.chaos        .store ((float) el.getDoubleAttribute ("chaos",    0.0));
+    s.decay        .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("decay",    0.8)));
+    s.reverseChance.store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("reverse",  0.0)));
+    s.crunch       .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("crunch",   0.0)));
+    s.crushRate    .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("crushrate", 0.0)));
+    s.mix          .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("mix",      0.5)));
+    s.chance       .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("chance",   1.0)));
+    s.drive        .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("drive",    0.0)));
+    s.tone         .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("tone",     0.5)));
+    s.feedback     .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("feedback", 0.0)));
+    s.tape         .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("tape",     0.0)));
+    s.ringMod      .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("ringmod",  0.0)));
+    s.varispeed    .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("varispeed",0.0)));
+    s.stereo       .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("stereo",   0.0)));
+    s.stretch      .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("stretch",  0.0)));
+    s.shimmer      .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("shimmer",  0.0)));
+    s.res          .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("res",      0.0)));
+    s.fold         .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("fold",     0.0)));
+    s.gate         .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("gate",     0.0)));
+    s.smear        .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("smear",    0.0)));
+    s.stutter      .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("stutter",  0.0)));
+    s.chaos        .store (juce::jlimit (0.0f, 1.0f, (float) el.getDoubleAttribute ("chaos",    0.0)));
 
     // v0.41 — per-Act ENGINE bundle. Defaults below preserve whatever
     // engine the Act is currently running so older .lpsbact files (which
@@ -6652,11 +7861,54 @@ bool LoopSaboteurProcessor::loadActFromXml (const juce::XmlElement& el, int targ
     s.engineMix  .store (juce::jlimit (0.0f, 1.0f,
                                         (float) el.getDoubleAttribute ("engineMix",
                                                                         (double) s.engineMix.load())));
+    s.engineIntensity.store (juce::jlimit (0.0f, 1.0f,
+                                        (float) el.getDoubleAttribute ("engineIntensity", 0.5)));
     s.interpMode .store (juce::jlimit (0, (int) loopsab::kNumInterpModes - 1,
                                         el.getIntAttribute ("interpMode", s.interpMode.load())));
     s.crushAA    .store (el.getIntAttribute ("crushAA", s.crushAA.load() ? 1 : 0) != 0);
     s.crushMu    .store (el.getIntAttribute ("crushMu", s.crushMu.load() ? 1 : 0) != 0);
     s.crushAll   .store (el.getIntAttribute ("crushAll", s.crushAll.load() ? 1 : 0) != 0);
+
+    // v0.5.0 — per-Act filter mode + frequency split.
+    s.filterMode   .store (juce::jlimit (0, (int) loopsab::kNumFilterModes - 1,
+                                          el.getIntAttribute ("filterMode", s.filterMode.load())));
+    s.freqSplitMode.store (juce::jlimit (0, 2,
+                                          el.getIntAttribute ("freqSplitMode", s.freqSplitMode.load())));
+    s.freqSplitHz  .store (juce::jlimit (80.0f, 8000.0f,
+                                          (float) el.getDoubleAttribute ("freqSplitHz",
+                                                                          (double) s.freqSplitHz.load())));
+    s.driveType.store (juce::jlimit (0, (int) loopsab::kNumDriveTypes - 1,
+                                     el.getIntAttribute ("driveType", s.driveType.load())));
+    s.foldTopology.store (juce::jlimit (0, (int) loopsab::kNumFoldTopologies - 1,
+                                        el.getIntAttribute ("foldTopology", s.foldTopology.load())));
+    s.shimmerOctave.store (juce::jlimit (0, (int) loopsab::kNumShimmerOctaves - 1,
+                                         el.getIntAttribute ("shimmerOctave", s.shimmerOctave.load())));
+    s.smearCharacter.store (juce::jlimit (0, (int) loopsab::kNumSmearCharacters - 1,
+                                          el.getIntAttribute ("smearCharacter", s.smearCharacter.load())));
+    s.stutterWindow.store (juce::jlimit (0, (int) loopsab::kNumStutterWindows - 1,
+                                         el.getIntAttribute ("stutterWindow", s.stutterWindow.load())));
+    s.varispeedCurve.store (juce::jlimit (0, (int) loopsab::kNumVarispeedCurves - 1,
+                                          el.getIntAttribute ("varispeedCurve", s.varispeedCurve.load())));
+    s.slideCurve.store (juce::jlimit (0, (int) loopsab::kNumSlideCurves - 1,
+                                      el.getIntAttribute ("slideCurve", s.slideCurve.load())));
+    s.reverseMode.store (juce::jlimit (0, (int) loopsab::kNumReverseModes - 1,
+                                       el.getIntAttribute ("reverseMode", s.reverseMode.load())));
+    s.tapeMode.store (juce::jlimit (0, (int) loopsab::kNumTapeModes - 1,
+                                     el.getIntAttribute ("tapeMode", s.tapeMode.load())));
+    s.ringModWave.store (juce::jlimit (0, (int) loopsab::kNumRingModWaves - 1,
+                                        el.getIntAttribute ("ringModWave", s.ringModWave.load())));
+    s.chaosDistribution.store (juce::jlimit (0, (int) loopsab::kNumChaosDistributions - 1,
+                                             el.getIntAttribute ("chaosDistribution", s.chaosDistribution.load())));
+    s.feedbackCharacter.store (juce::jlimit (0, (int) loopsab::kNumFeedbackCharacters - 1,
+                                             el.getIntAttribute ("feedbackCharacter", s.feedbackCharacter.load())));
+    s.stretchMode.store (juce::jlimit (0, (int) loopsab::kNumStretchModes - 1,
+                                       el.getIntAttribute ("stretchMode", s.stretchMode.load())));
+    s.judderShape.store (juce::jlimit (0, (int) loopsab::kNumJudderShapes - 1,
+                                       el.getIntAttribute ("judderShape", s.judderShape.load())));
+    s.lookbackBehaviour.store (juce::jlimit (0, (int) loopsab::kNumLookbackBehaviours - 1,
+                                       el.getIntAttribute ("lookbackBehaviour", s.lookbackBehaviour.load())));
+    s.decayCurve.store (juce::jlimit (0, (int) loopsab::kNumDecayCurves - 1,
+                                       el.getIntAttribute ("decayCurve", s.decayCurve.load())));
 
     // v0.42 — per-Act stereo mode / FX-on-Dry flags / ring mod quantise.
     // Defaults preserve the target slot's current values so v2 (and v1)
@@ -6698,6 +7950,7 @@ bool LoopSaboteurProcessor::loadActFromXml (const juce::XmlElement& el, int targ
                                                 lfoEl->getIntAttribute ("xTarget", -1)));
         lfo.crossDepth    .store (juce::jlimit (-1.0f, 1.0f,
                                                 (float) lfoEl->getDoubleAttribute ("xDepth", 1.0)));
+        lfo.envFollowGain .store (juce::jlimit (1.0f, 10.0f, (float) lfoEl->getDoubleAttribute ("envFollowGain", 1.0)));
     }
 
     sceneStored[targetIdx].store (true);

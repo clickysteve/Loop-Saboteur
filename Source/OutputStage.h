@@ -343,14 +343,22 @@ public:
     {
         mix.store (juce::jlimit (0.0f, 1.0f, m));
     }
-    int   getMode() const noexcept { return mode.load(); }
-    float getMix () const noexcept { return mix.load(); }
+    // v0.7.0 — intensity scales how hard the output stage processing
+    // is applied within the wet path. 0 = minimal colour, 1 = full effect.
+    void setIntensity (float v) noexcept
+    {
+        intensity.store (juce::jlimit (0.0f, 1.0f, v));
+    }
+    int   getMode()      const noexcept { return mode.load(); }
+    float getMix ()      const noexcept { return mix.load(); }
+    float getIntensity() const noexcept { return intensity.load(); }
 
     // Per-sample, in-place, stereo. Called after softLimit, before lookahead.
     inline void process (float& L, float& R) noexcept
     {
         const int   m = mode.load (std::memory_order_relaxed);
         const float w = mix .load (std::memory_order_relaxed);
+        const float k = intensity.load (std::memory_order_relaxed);
 
         if (m == kOutClean || w <= 0.0001f)
             return;
@@ -373,6 +381,12 @@ public:
             default: break;
         }
 
+        // v0.7.0 — intensity scales how much of the mode's processing
+        // is applied before the wet/dry mix. At k=0 the wet path equals
+        // dry (no character), at k=1 you get the full effect.
+        wetL = dryL + (wetL - dryL) * k;
+        wetR = dryR + (wetR - dryR) * k;
+
         L = dryL + (wetL - dryL) * w;
         R = dryR + (wetR - dryR) * w;
     }
@@ -381,56 +395,53 @@ private:
     // -------- Per-mode DSP --------
     inline void processCassette (float& L, float& R) noexcept
     {
-        // Wow + flutter via short delay line modulation.
+        // v0.7.0 — boosted wow/flutter/hiss/sat for more obvious character.
         wowDelay.write (0.5f * (L + R));
         wowPhase     += (float) (juce::MathConstants<double>::twoPi * 0.4 / fs);
         flutterPhase += (float) (juce::MathConstants<double>::twoPi * 8.0 / fs);
         if (wowPhase     > juce::MathConstants<float>::twoPi) wowPhase     -= juce::MathConstants<float>::twoPi;
         if (flutterPhase > juce::MathConstants<float>::twoPi) flutterPhase -= juce::MathConstants<float>::twoPi;
-        const float wow  = std::sin (wowPhase)     * 6.0f;   // ±6 samples
-        const float flut = std::sin (flutterPhase) * 1.5f;   // ±1.5 samples
-        const float jit  = (whiteNoise() * 0.5f);
+        const float wow  = std::sin (wowPhase)     * 10.0f;   // ±10 samples (was ±6)
+        const float flut = std::sin (flutterPhase) * 3.0f;    // ±3 samples (was ±1.5)
+        const float jit  = (whiteNoise() * 0.8f);
         const float dly  = juce::jmax (1.0f, 24.0f + wow + flut + jit);
         const float wobbleMono = wowDelay.read (dly);
 
-        // Mix wobble back in lightly so we don't lose stereo.
-        L = 0.85f * L + 0.15f * wobbleMono;
-        R = 0.85f * R + 0.15f * wobbleMono;
+        L = 0.75f * L + 0.25f * wobbleMono;   // was 85/15
+        R = 0.75f * R + 0.25f * wobbleMono;
 
         // EQ shape.
         L = cassetteHP60.process (L); R = cassetteHP60.process (R);
         L = cassetteLP9k.process (L); R = cassetteLP9k.process (R);
 
-        // Pinkish hiss (white through LP). Kept very low — Loop Saboteur is
-        // already a busy plugin and a noticeable noise floor sounds like a
-        // bug, not a feature. v0.40.1 — dropped from 0.012 to 0.0035.
-        const float hiss = cassetteHissLP.process (whiteNoise()) * 0.0035f;
+        // Pinkish hiss.
+        const float hiss = cassetteHissLP.process (whiteNoise()) * 0.008f;  // was 0.0035
         L += hiss; R += hiss;
 
-        // Mild saturation.
-        L = softSat (L, 1.4f);
-        R = softSat (R, 1.4f);
+        // Tape saturation.
+        L = softSat (L, 1.8f);   // was 1.4
+        R = softSat (R, 1.8f);
     }
 
     inline void processReel (float& L, float& R) noexcept
     {
-        // Slow stately wow only.
+        // v0.7.0 — boosted wow + saturation for more audible character.
         wowDelay.write (0.5f * (L + R));
         wowPhase += (float) (juce::MathConstants<double>::twoPi * 0.25 / fs);
         if (wowPhase > juce::MathConstants<float>::twoPi) wowPhase -= juce::MathConstants<float>::twoPi;
-        const float wow = std::sin (wowPhase) * 3.0f;
+        const float wow = std::sin (wowPhase) * 5.0f;          // was ±3
         const float dly = juce::jmax (1.0f, 16.0f + wow);
         const float wobbleMono = wowDelay.read (dly);
-        L = 0.92f * L + 0.08f * wobbleMono;
-        R = 0.92f * R + 0.08f * wobbleMono;
+        L = 0.85f * L + 0.15f * wobbleMono;                    // was 92/8
+        R = 0.85f * R + 0.15f * wobbleMono;
 
         // Head bump + gentle HF roll.
         L = reelShelf.processL (L); R = reelShelf.processR (R);
         L = reelLP14k.process (L);  R = reelLP14k.process (R);
 
-        // Soft tape compression.
-        L = softSat (L, 1.15f);
-        R = softSat (R, 1.15f);
+        // Tape compression — heavier drive.
+        L = softSat (L, 1.5f);                                 // was 1.15
+        R = softSat (R, 1.5f);
     }
 
     inline void processDamaged (float& L, float& R) noexcept
@@ -478,30 +489,29 @@ private:
 
     inline void processVinyl (float& L, float& R) noexcept
     {
-        // Gentle 33⅓ rpm pitch wobble (~0.55Hz).
+        // v0.7.0 — boosted wow, surface noise, and crackle for more character.
         wowDelay.write (0.5f * (L + R));
         vinylPhase += (float) (juce::MathConstants<double>::twoPi * 0.55 / fs);
         if (vinylPhase > juce::MathConstants<float>::twoPi) vinylPhase -= juce::MathConstants<float>::twoPi;
-        const float wow = std::sin (vinylPhase) * 2.0f;
+        const float wow = std::sin (vinylPhase) * 4.0f;          // was ±2
         const float dly = juce::jmax (1.0f, 8.0f + wow);
         const float wobbleMono = wowDelay.read (dly);
-        L = 0.95f * L + 0.05f * wobbleMono;
-        R = 0.95f * R + 0.05f * wobbleMono;
+        L = 0.88f * L + 0.12f * wobbleMono;                      // was 95/5
+        R = 0.88f * R + 0.12f * wobbleMono;
 
         // RIAA-ish HF tilt via gentle peaking lift then HP.
         L = vinylTilt.processL (L); R = vinylTilt.processR (R);
         L = vinylRiaaHP.process (L); R = vinylRiaaHP.process (R);
 
-        // Continuous low-level surface noise.
-        const float surface = (whiteNoise() * 0.0035f);
+        // Continuous surface noise.
+        const float surface = (whiteNoise() * 0.007f);           // was 0.0035
         L += surface; R += surface;
 
         // Crackle: occasional impulsive clicks.
         if (--clickCountdown <= 0)
         {
-            // ~3 clicks per second.
-            clickCountdown = 1 + (int) (uniform() * fs * 0.66);
-            const float popAmp = 0.05f + 0.15f * (float) uniform();
+            clickCountdown = 1 + (int) (uniform() * fs * 0.5);   // ~4 clicks/s (was ~3)
+            const float popAmp = 0.08f + 0.22f * (float) uniform();  // was 0.05+0.15
             const float popSign = (uniform() < 0.5) ? -1.0f : 1.0f;
             L += popAmp * popSign; R += popAmp * popSign;
         }
@@ -678,8 +688,9 @@ private:
 
     // -------- State --------
     double fs = 44100.0;
-    std::atomic<int>   mode { kOutClean };
-    std::atomic<float> mix  { 1.0f };
+    std::atomic<int>   mode      { kOutClean };
+    std::atomic<float> mix       { 1.0f };
+    std::atomic<float> intensity { 0.5f };   // v0.7.0 — effect depth (0=subtle, 1=full)
 
     // Filters per mode.
     OnePoleHP cassetteHP60;
@@ -777,28 +788,39 @@ public:
         fadeRemain = 0;
     }
 
-    // Push the desired mode/mix; triggers a crossfade if anything changed.
-    void setTarget (int mode, float mix) noexcept
+    // Push the desired mode/mix/intensity; triggers a crossfade if anything changed.
+    void setTarget (int mode, float mix, float intens = 0.5f) noexcept
     {
-        mode = juce::jlimit (0, (int) kNumOutputStages - 1, mode);
-        mix  = juce::jlimit (0.0f, 1.0f, mix);
+        mode   = juce::jlimit (0, (int) kNumOutputStages - 1, mode);
+        mix    = juce::jlimit (0.0f, 1.0f, mix);
+        intens = juce::jlimit (0.0f, 1.0f, intens);
 
-        // If we're mid-fade, treat any change as a re-target by completing
-        // the fade synchronously into the incoming stage's state. Cheap
-        // approximation: just snap currentMode/currentMix to the in-flight
-        // target so the next block of comparisons uses the new baseline.
-        if (mode == currentMode && std::abs (mix - currentMix) < 1.0e-4f)
+        if (mode == currentMode
+            && std::abs (mix    - currentMix)    < 1.0e-4f
+            && std::abs (intens - currentIntens) < 1.0e-4f)
             return;
+
+        // v0.7.0 — intensity-only changes update the active stage directly
+        // (no crossfade needed — it's just a gain scaling, not a mode change
+        // that requires filter re-init).
+        if (mode == currentMode && std::abs (mix - currentMix) < 1.0e-4f)
+        {
+            (activeIsA ? a : b).setIntensity (intens);
+            currentIntens = intens;
+            return;
+        }
 
         // Configure the *inactive* stage to be the incoming one.
         OutputStage& incoming = activeIsA ? b : a;
         incoming.reset();
-        incoming.setMode (mode);
-        incoming.setMix  (mix);
+        incoming.setMode      (mode);
+        incoming.setMix       (mix);
+        incoming.setIntensity (intens);
 
-        currentMode = mode;
-        currentMix  = mix;
-        fadeRemain  = kFadeSamples;
+        currentMode   = mode;
+        currentMix    = mix;
+        currentIntens = intens;
+        fadeRemain    = kFadeSamples;
     }
 
     // Per-sample stereo process. Always called from the audio thread.
@@ -833,15 +855,17 @@ public:
             activeIsA = ! activeIsA;
     }
 
-    int   getMode() const noexcept { return currentMode; }
-    float getMix () const noexcept { return currentMix;  }
+    int   getMode()      const noexcept { return currentMode; }
+    float getMix ()      const noexcept { return currentMix;  }
+    float getIntensity() const noexcept { return currentIntens; }
 
 private:
     OutputStage a, b;
-    bool  activeIsA   = true;
-    int   fadeRemain  = 0;
-    int   currentMode = kOutClean;
-    float currentMix  = 0.0f;
+    bool  activeIsA     = true;
+    int   fadeRemain    = 0;
+    int   currentMode   = kOutClean;
+    float currentMix    = 0.0f;
+    float currentIntens = 0.5f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CrossfadingOutputStage)
 };
@@ -876,6 +900,608 @@ inline const char* interpDescription (int m) noexcept
         case kInterpDrop:   return "no interp — SP-1200 grit at pitch";
         case kInterpCubic:  return "Hermite — cleaner than linear";
         default:            return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Filter mode enum — used by the Tone/Res filter in the processor.
+//  v0.5.0 — replaces the old hardcoded bipolar tilt EQ with selectable
+//  modes: Tilt (legacy default), LP, HP, BP.
+// -----------------------------------------------------------------------------
+enum FilterMode
+{
+    kFilterTilt = 0,   // legacy bipolar: dark ← 0.5 → bright
+    kFilterLP,         // full-range low-pass, Tone = cutoff
+    kFilterHP,         // full-range high-pass, Tone = cutoff
+    kFilterBP,         // bandpass, Tone = centre freq, Res = Q
+    kNumFilterModes
+};
+
+inline const char* filterShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kFilterTilt: return "Tilt";
+        case kFilterLP:   return "LP";
+        case kFilterHP:   return "HP";
+        case kFilterBP:   return "BP";
+        default:          return "?";
+    }
+}
+
+inline const char* filterDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kFilterTilt: return "default — bipolar dark/bright tilt EQ";
+        case kFilterLP:   return "resonant low-pass filter";
+        case kFilterHP:   return "resonant high-pass filter";
+        case kFilterBP:   return "resonant bandpass filter";
+        default:          return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Drive type enum — saturation character for the DRIVE knob.
+// -----------------------------------------------------------------------------
+enum DriveType
+{
+    kDriveTape = 0,    // default — soft tape saturation (tanh)
+    kDriveTube,        // asymmetric even-harmonic (shifted tanh)
+    kDriveDiode,       // hard clip, odd harmonics
+    kDriveFuzz,        // extreme asymmetric — broken speaker vibe
+    kNumDriveTypes
+};
+
+inline const char* driveShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kDriveTape:  return "Tape";
+        case kDriveTube:  return "Tube";
+        case kDriveDiode: return "Diode";
+        case kDriveFuzz:  return "Fuzz";
+        default:          return "?";
+    }
+}
+
+inline const char* driveDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kDriveTape:  return "default — soft tape saturation";
+        case kDriveTube:  return "asymmetric, warm even harmonics";
+        case kDriveDiode: return "hard clip, odd harmonics";
+        case kDriveFuzz:  return "extreme — broken speaker";
+        default:          return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Fold topology enum — wavefolder shape for the FOLD knob.
+// -----------------------------------------------------------------------------
+enum FoldTopology
+{
+    kFoldSine = 0,     // default — smooth sine fold
+    kFoldTriangle,     // sharper, more metallic
+    kFoldAsymmetric,   // different fold on +/- half → even harmonics
+    kNumFoldTopologies
+};
+
+inline const char* foldShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kFoldSine:       return "Sine";
+        case kFoldTriangle:   return "Triangle";
+        case kFoldAsymmetric: return "Asymmetric";
+        default:              return "?";
+    }
+}
+
+inline const char* foldDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kFoldSine:       return "default — smooth sine fold";
+        case kFoldTriangle:   return "sharper, metallic harmonics";
+        case kFoldAsymmetric: return "even + odd harmonics mix";
+        default:              return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Shimmer octave enum — pitch interval for the SHIMMER feedback.
+// -----------------------------------------------------------------------------
+enum ShimmerOctave
+{
+    kShimmerUp1 = 0,   // default — +1 octave
+    kShimmerUp2,       // +2 octaves
+    kShimmerDown1,     // -1 octave
+    kShimmerFifth,     // +7 semitones (perfect fifth)
+    kShimmerFifthOct,  // +7 and +12 (dual: fifth + octave)
+    kNumShimmerOctaves
+};
+
+inline const char* shimmerShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kShimmerUp1:      return "+1 Oct";
+        case kShimmerUp2:      return "+2 Oct";
+        case kShimmerDown1:    return "-1 Oct";
+        case kShimmerFifth:    return "+5th";
+        case kShimmerFifthOct: return "+5th/Oct";
+        default:               return "?";
+    }
+}
+
+inline const char* shimmerDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kShimmerUp1:      return "default — octave-up halo";
+        case kShimmerUp2:      return "two octaves up — crystalline";
+        case kShimmerDown1:    return "octave down — subharmonic wash";
+        case kShimmerFifth:    return "perfect fifth — organ-like";
+        case kShimmerFifthOct: return "fifth + octave — full chord";
+        default:               return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Smear character enum — delay type for the SMEAR knob.
+// -----------------------------------------------------------------------------
+enum SmearCharacter
+{
+    kSmearBlur = 0,    // default — short delay blur
+    kSmearDiffuse,     // allpass-based, reverb-like wash
+    kSmearFreeze,      // infinite feedback, captures a moment
+    kNumSmearCharacters
+};
+
+inline const char* smearShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kSmearBlur:    return "Blur";
+        case kSmearDiffuse: return "Diffuse";
+        case kSmearFreeze:  return "Freeze";
+        default:            return "?";
+    }
+}
+
+inline const char* smearDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kSmearBlur:    return "default — short delay smear";
+        case kSmearDiffuse: return "allpass wash — reverb-like";
+        case kSmearFreeze:  return "infinite hold — frozen moment";
+        default:            return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Stutter window enum — micro-loop behaviour for the STUTTER knob.
+// -----------------------------------------------------------------------------
+enum StutterWindow
+{
+    kStutterFixed = 0,    // default — constant window size
+    kStutterDecaying,     // window shrinks → accelerating stutter
+    kStutterGrowing,      // window grows → decelerating stutter
+    kNumStutterWindows
+};
+
+inline const char* stutterShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kStutterFixed:    return "Fixed";
+        case kStutterDecaying: return "Decaying";
+        case kStutterGrowing:  return "Growing";
+        default:               return "?";
+    }
+}
+
+inline const char* stutterDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kStutterFixed:    return "default — steady loop size";
+        case kStutterDecaying: return "shrinking — builds tension";
+        case kStutterGrowing:  return "expanding — winds down";
+        default:               return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Varispeed curve enum — brake shape for the VARISPEED knob.
+// -----------------------------------------------------------------------------
+enum VarispeedCurve
+{
+    kVariLinear = 0,    // default — constant deceleration
+    kVariExponential,   // DJ brake feel
+    kVariSudden,        // plays at speed, drops at end
+    kNumVarispeedCurves
+};
+
+inline const char* varispeedShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kVariLinear:      return "Linear";
+        case kVariExponential: return "Exponential";
+        case kVariSudden:      return "Sudden";
+        default:               return "?";
+    }
+}
+
+inline const char* varispeedDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kVariLinear:      return "default — steady slow-down";
+        case kVariExponential: return "DJ brake — fast then crawl";
+        case kVariSudden:      return "full speed then stop";
+        default:               return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Slide curve enum — pitch-bend shape for the SLIDE knob.
+// -----------------------------------------------------------------------------
+enum SlideCurve
+{
+    kSlideLinear = 0,      // default — constant-rate bend
+    kSlideExponential,     // accelerating bend
+    kSlideLog,             // fast start, slow finish
+    kSlideSCurve,          // ease-in-out
+    kNumSlideCurves
+};
+
+inline const char* slideShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kSlideLinear:      return "Linear";
+        case kSlideExponential: return "Exponential";
+        case kSlideLog:         return "Log";
+        case kSlideSCurve:      return "S-Curve";
+        default:                return "?";
+    }
+}
+
+inline const char* slideDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kSlideLinear:      return "default — constant-rate bend";
+        case kSlideExponential: return "accelerating — tape spin-up";
+        case kSlideLog:         return "fast start, slow finish — braking";
+        case kSlideSCurve:      return "ease in/out — smooth S";
+        default:                return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Reverse mode enum — playback direction logic for the REVERSE knob.
+// -----------------------------------------------------------------------------
+enum ReverseMode
+{
+    kReverseRandom = 0,    // default — probability-based coin flip
+    kReverseAlternate,     // every other slice reverses
+    kReversePalindrome,    // plays forward then backward within slice
+    kReversePingPong,      // alternates fwd/bwd across judder hits
+    kNumReverseModes
+};
+
+inline const char* reverseShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kReverseRandom:     return "Random";
+        case kReverseAlternate:  return "Alternate";
+        case kReversePalindrome: return "Palindrome";
+        case kReversePingPong:   return "Ping-Pong";
+        default:                 return "?";
+    }
+}
+
+inline const char* reverseDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kReverseRandom:     return "default — coin-flip per slice";
+        case kReverseAlternate:  return "every other slice reversed";
+        case kReversePalindrome: return "fwd then bwd within slice";
+        case kReversePingPong:   return "alternates across judder hits";
+        default:                 return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Tape mode enum — wow/flutter blend for the TAPE knob.
+// -----------------------------------------------------------------------------
+enum TapeMode
+{
+    kTapeClassic = 0,  // default — blended wow + flutter
+    kTapeWowOnly,      // slow drift only — warped vinyl
+    kTapeFlutterOnly,  // fast wobble only — VHS
+    kTapeExtreme,      // both maxed with wider deviation
+    kNumTapeModes
+};
+
+inline const char* tapeShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kTapeClassic:     return "Classic";
+        case kTapeWowOnly:     return "Wow Only";
+        case kTapeFlutterOnly: return "Flutter Only";
+        case kTapeExtreme:     return "Extreme";
+        default:               return "?";
+    }
+}
+
+inline const char* tapeDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kTapeClassic:     return "default — blended wow + flutter";
+        case kTapeWowOnly:     return "slow drift — warped vinyl feel";
+        case kTapeFlutterOnly: return "fast wobble — VHS character";
+        case kTapeExtreme:     return "both maxed — wide deviation";
+        default:               return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Ring mod waveform enum — modulator shape for the RING MOD knob.
+// -----------------------------------------------------------------------------
+enum RingModWave
+{
+    kRingSine = 0,     // default — classic sine ring mod
+    kRingSquare,       // octave-down harshness
+    kRingTriangle,     // mellower, softer harmonics
+    kRingSaw,          // asymmetric edge
+    kNumRingModWaves
+};
+
+inline const char* ringModWaveShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kRingSine:     return "Sine";
+        case kRingSquare:   return "Square";
+        case kRingTriangle: return "Triangle";
+        case kRingSaw:      return "Saw";
+        default:            return "?";
+    }
+}
+
+inline const char* ringModWaveDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kRingSine:     return "default — classic ring mod";
+        case kRingSquare:   return "octave-down, hard harmonics";
+        case kRingTriangle: return "mellower, softer character";
+        case kRingSaw:      return "asymmetric edge";
+        default:            return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Chaos distribution enum — random character for the CHAOS knob.
+// -----------------------------------------------------------------------------
+enum ChaosDistribution
+{
+    kChaosUniform = 0,   // default — uniform random
+    kChaosGaussian,      // clustered centre, occasional spikes
+    kChaosDrunkWalk,     // Brownian — smooth wandering
+    kChaosBipolarSnap,   // hard ±1 only — dramatic on/off
+    kNumChaosDistributions
+};
+
+inline const char* chaosShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kChaosUniform:     return "Uniform";
+        case kChaosGaussian:    return "Gaussian";
+        case kChaosDrunkWalk:   return "Drunk Walk";
+        case kChaosBipolarSnap: return "Bipolar Snap";
+        default:                return "?";
+    }
+}
+
+inline const char* chaosDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kChaosUniform:     return "default — uniform random";
+        case kChaosGaussian:    return "clustered, occasional spikes";
+        case kChaosDrunkWalk:   return "Brownian — smooth wandering";
+        case kChaosBipolarSnap: return "hard +/- only — glitch switch";
+        default:                return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Feedback character enum — re-injection flavour for the FEEDBACK knob.
+// -----------------------------------------------------------------------------
+enum FeedbackCharacter
+{
+    kFeedbackClean = 0,    // default — direct re-injection
+    kFeedbackFiltered,     // LP at ~2 kHz before re-inject
+    kFeedbackSaturated,    // soft-clip before re-inject
+    kFeedbackDucked,       // sidechain-compressed against input
+    kNumFeedbackCharacters
+};
+
+inline const char* feedbackShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kFeedbackClean:     return "Clean";
+        case kFeedbackFiltered:  return "Filtered";
+        case kFeedbackSaturated: return "Saturated";
+        case kFeedbackDucked:    return "Ducked";
+        default:                 return "?";
+    }
+}
+
+inline const char* feedbackDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kFeedbackClean:     return "default — direct re-injection";
+        case kFeedbackFiltered:  return "LP at 2 kHz — tames shrillness";
+        case kFeedbackSaturated: return "soft-clip — thickens, never shrill";
+        case kFeedbackDucked:    return "sidechain — swells in gaps";
+        default:                 return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Stretch mode enum — granular behaviour for the STRETCH knob.
+// -----------------------------------------------------------------------------
+enum StretchMode
+{
+    kStretchStandard = 0,  // default — basic overlapping grains
+    kStretchPaulstretch,   // massive overlap for frozen textures
+    kStretchSpectral,      // FFT freeze — holds frequency content
+    kStretchFormant,       // preserves formant peaks
+    kNumStretchModes
+};
+
+inline const char* stretchShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kStretchStandard:    return "Standard";
+        case kStretchPaulstretch: return "Paulstretch";
+        case kStretchSpectral:    return "Spectral";
+        case kStretchFormant:     return "Formant";
+        default:                  return "?";
+    }
+}
+
+inline const char* stretchDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kStretchStandard:    return "default — overlapping grains";
+        case kStretchPaulstretch: return "massive overlap — frozen texture";
+        case kStretchSpectral:    return "FFT freeze — holds spectrum";
+        case kStretchFormant:     return "preserves vocal character";
+        default:                  return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Judder shape enum — retrigger timing for the JUDDER knob.
+// -----------------------------------------------------------------------------
+enum JudderShape
+{
+    kJudderEven = 0,       // default — evenly spaced
+    kJudderAccelerating,   // retriggers get closer — machine-gun ramp
+    kJudderDecelerating,   // retriggers spread apart — bouncing ball
+    kJudderRandom,         // jittered timing
+    kNumJudderShapes
+};
+
+inline const char* judderShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kJudderEven:         return "Even";
+        case kJudderAccelerating: return "Accelerating";
+        case kJudderDecelerating: return "Decelerating";
+        case kJudderRandom:       return "Random";
+        default:                  return "?";
+    }
+}
+
+inline const char* judderDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kJudderEven:         return "default — evenly spaced";
+        case kJudderAccelerating: return "closer together — ramp up";
+        case kJudderDecelerating: return "spread apart — bouncing ball";
+        case kJudderRandom:       return "jittered — unpredictable";
+        default:                  return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Lookback behaviour enum — how the capture window is selected.
+// -----------------------------------------------------------------------------
+enum LookbackBehaviour
+{
+    kLookbackFixed = 0,      // default — exact lookback window
+    kLookbackJittered,       // small random offset each slice
+    kLookbackQuantised,      // snap to nearest beat boundary
+    kNumLookbackBehaviours
+};
+
+inline const char* lookbackShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kLookbackFixed:     return "Fixed";
+        case kLookbackJittered:  return "Jittered";
+        case kLookbackQuantised: return "Quantised";
+        default:                 return "?";
+    }
+}
+
+inline const char* lookbackDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kLookbackFixed:     return "default — exact lookback window";
+        case kLookbackJittered:  return "random offset per slice — subtle variation";
+        case kLookbackQuantised: return "snap to nearest beat — rhythmic coherence";
+        default:                 return "";
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Decay curve enum — amplitude envelope shape for slice playback.
+// -----------------------------------------------------------------------------
+enum DecayCurve
+{
+    kDecayLinear = 0,        // default — straight line
+    kDecayExponential,       // natural tail — fast drop then slow fade
+    kDecayLogarithmic,       // sustains then drops sharply
+    kDecayGate,              // instant cut — no fade
+    kNumDecayCurves
+};
+
+inline const char* decayShortName (int m) noexcept
+{
+    switch (m)
+    {
+        case kDecayLinear:      return "Linear";
+        case kDecayExponential: return "Exponential";
+        case kDecayLogarithmic: return "Logarithmic";
+        case kDecayGate:        return "Gate";
+        default:                return "?";
+    }
+}
+
+inline const char* decayDescription (int m) noexcept
+{
+    switch (m)
+    {
+        case kDecayLinear:      return "default — straight line fade";
+        case kDecayExponential: return "natural tail — fast drop, slow fade";
+        case kDecayLogarithmic: return "holds then drops — sustained presence";
+        case kDecayGate:        return "instant cut — no fade at all";
+        default:                return "";
     }
 }
 

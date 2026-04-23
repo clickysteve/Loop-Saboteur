@@ -91,9 +91,8 @@ private:
                          scalePanelR, displayPanelR;
     juce::Rectangle<int> stereoPanelR, fxPanelR, ringModPanelR,
                          pitchPanelR, uiPanelR;
-    // v0.42 — Preset Recall lifted out of the Engine panel into its own
-    // panel so it can live in the GLOBAL view alongside the other globals.
-    juce::Rectangle<int> recallPanelR;
+    // v0.5.0 — CHARACTER panel (replaces enginePanelR when CHARACTER sub-tab active)
+    juce::Rectangle<int> characterPanelR;
 
     // ---------- Tab selector: GLOBAL + A..H -------------------------------
     juce::TextButton globalTab { "GLOBAL" };
@@ -103,9 +102,13 @@ private:
     // current view mode. Called from setCurrentActTab() and buildControls().
     void applyViewModeVisibility();
 
+    // v0.5.0 — Show/hide ENGINE and CHARACTER sub-tab controls.
+    void applySubTabVisibility();
+
     // ---------- ENGINE controls -------------------------------------------
     juce::ComboBox stageBox;
     juce::Slider   outputMixSlider;                     // 0..100% (continuous)
+    juce::Slider   engineIntensitySlider;               // 0..100% (continuous)
     std::array<juce::TextButton, 3> interpButtons;      // Linear / Drop / Cubic
 
     // v0.42.1 — Crunch got restyled: each sub-toggle is now an explicit
@@ -119,8 +122,34 @@ private:
     juce::TextButton crunchAAOff   { "OFF" };
     juce::TextButton crunchMuOn    { "ON"  };
     juce::TextButton crunchMuOff   { "OFF" };
-    juce::TextButton recallYes     { "YES" };
-    juce::TextButton recallNo      { "NO"  };
+
+    // v0.5.0 — filter mode radio buttons (Tilt/LP/HP/BP) and frequency split.
+    std::array<juce::TextButton, 4> filterButtons;          // Tilt / LP / HP / BP
+    std::array<juce::TextButton, 3> freqSplitButtons;       // Full / Low / High
+    juce::Slider   freqSplitSlider;                          // crossover Hz
+
+    // v0.5.0 — ENGINE / CHARACTER sub-tab within the per-Act view.
+    bool showCharacterSubTab = false;
+    juce::TextButton engineSubTab    { "ENGINE" };
+    juce::TextButton characterSubTab { "CHARACTER" };
+
+    // ---------- CHARACTER controls (per-Act knob modes) -----------------
+    std::array<juce::TextButton, 4> driveTypeButtons;       // Tape/Tube/Diode/Fuzz
+    std::array<juce::TextButton, 3> foldTopologyButtons;    // Sine/Triangle/Asymmetric
+    std::array<juce::TextButton, 5> shimmerOctaveButtons;   // +1Oct/+2Oct/-1Oct/+5th/+5th+Oct
+    std::array<juce::TextButton, 3> smearCharacterButtons;  // Blur/Diffuse/Freeze
+    std::array<juce::TextButton, 3> stutterWindowButtons;   // Fixed/Decaying/Growing
+    std::array<juce::TextButton, 3> varispeedCurveButtons;  // Linear/Exponential/Sudden
+    std::array<juce::TextButton, 4> slideCurveButtons;      // Linear/Exponential/Log/S-Curve
+    std::array<juce::TextButton, 4> reverseModeButtons;     // Random/Alternate/Palindrome/PingPong
+    std::array<juce::TextButton, 4> tapeModeButtons;            // Classic/WowOnly/FlutterOnly/Extreme
+    std::array<juce::TextButton, 4> ringModWaveButtons;         // Sine/Square/Triangle/Saw
+    std::array<juce::TextButton, 4> chaosDistributionButtons;   // Uniform/Gaussian/DrunkWalk/BipolarSnap
+    std::array<juce::TextButton, 4> feedbackCharacterButtons;   // Clean/Filtered/Saturated/Ducked
+    std::array<juce::TextButton, 4> stretchModeButtons;         // Standard/Paulstretch/Spectral/Formant
+    std::array<juce::TextButton, 4> judderShapeButtons;         // Even/Accelerating/Decelerating/Random
+    std::array<juce::TextButton, 3> lookbackBehaviourButtons;  // Fixed/Jittered/Quantised
+    std::array<juce::TextButton, 4> decayCurveButtons;         // Linear/Exponential/Logarithmic/Gate
 
     // ---------- GRID ACCENT -----------------------------------------------
     juce::ComboBox accentBox;                            // Off + 2..12
@@ -138,6 +167,7 @@ private:
     juce::TextButton displayWaveform { "Show waveform strip" };
     juce::TextButton displayTooltips { "Show tooltips" };
     juce::TextButton displayPageFollow { "Page follows playhead" };
+    juce::TextButton setDefaultsBtn { "Set as default" };
 
     // ---------- STEREO ----------------------------------------------------
     std::array<juce::TextButton, 4> stereoButtons;      // Random / PingPong / AutoPan / Haas
@@ -278,9 +308,10 @@ inline void SettingsPage::buildControls()
     stageBox.onChange = [this] {
         const int stage = stageBox.getSelectedId() - 1;
         proc->setActEngineStage (currentActIdx, stage);
-        // v0.42 — OUTPUT MIX is meaningless for the CLEAN stage (there's
-        // no processed signal to mix against), so disable it there.
-        outputMixSlider.setEnabled (stage != (int) kOutClean);
+        // v0.42 — OUTPUT MIX and INTENSITY are meaningless for CLEAN.
+        const bool active = (stage != (int) kOutClean);
+        outputMixSlider.setEnabled (active);
+        engineIntensitySlider.setEnabled (active);
     };
     addAndMakeVisible (stageBox);
     allInteractive.push_back (&stageBox);
@@ -298,6 +329,20 @@ inline void SettingsPage::buildControls()
     outputMixSlider.setEnabled (proc->getActEngineStage (currentActIdx) != (int) kOutClean);
     addAndMakeVisible (outputMixSlider);
     allInteractive.push_back (&outputMixSlider);
+
+    // ---------- ENGINE: Intensity slider (0..100 %) -------------------------
+    engineIntensitySlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    engineIntensitySlider.setRange (0.0, 100.0, 1.0);
+    engineIntensitySlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 56, 22);
+    engineIntensitySlider.setTextValueSuffix (" %");
+    engineIntensitySlider.setValue (proc->getActEngineIntensity (currentActIdx) * 100.0, juce::dontSendNotification);
+    engineIntensitySlider.onValueChange = [this] {
+        proc->setActEngineIntensity (currentActIdx, (float) (engineIntensitySlider.getValue() * 0.01));
+    };
+    // v0.7.0 — match initial enabled state to the current stage selection.
+    engineIntensitySlider.setEnabled (proc->getActEngineStage (currentActIdx) != (int) kOutClean);
+    addAndMakeVisible (engineIntensitySlider);
+    allInteractive.push_back (&engineIntensitySlider);
 
     // ---------- ENGINE: Interpolation radio (3, per-Act) ------------------
     for (int i = 0; i < 3; ++i)
@@ -330,16 +375,243 @@ inline void SettingsPage::buildControls()
                   [this] { proc->setActCrushMu (currentActIdx, false); },
                   907);
 
-    // ---------- ENGINE: Preset recall YES / NO (global flag) --------------
-    // Paired radio — makes the state more glanceable than a single toggle.
-    wireRadioBtn (recallYes,
-                  [this] { return   proc->getPresetRecallEngine(); },
-                  [this] { proc->setPresetRecallEngine (true); },
-                  902);
-    wireRadioBtn (recallNo,
-                  [this] { return ! proc->getPresetRecallEngine(); },
-                  [this] { proc->setPresetRecallEngine (false); },
-                  902);
+    // ---------- ENGINE: Filter mode radio (Tilt/LP/HP/BP, per-Act) --------
+    {
+        static const char* fNames[] = { "Tilt", "LP", "HP", "BP" };
+        for (int i = 0; i < 4; ++i)
+        {
+            filterButtons[i].setButtonText (fNames[i]);
+            wireRadioBtn (filterButtons[i],
+                          [this, i] { return proc->getActFilterMode (currentActIdx) == i; },
+                          [this, i] { proc->setActFilterMode (currentActIdx, i); },
+                          908);
+        }
+    }
+
+    // ---------- ENGINE: Frequency split radio (Full/Low/High, per-Act) ---
+    {
+        static const char* sNames[] = { "Full Range", "Low Only", "High Only" };
+        for (int i = 0; i < 3; ++i)
+        {
+            freqSplitButtons[i].setButtonText (sNames[i]);
+            wireRadioBtn (freqSplitButtons[i],
+                          [this, i] { return proc->getActFreqSplitMode (currentActIdx) == i; },
+                          [this, i] {
+                              proc->setActFreqSplitMode (currentActIdx, i);
+                              freqSplitSlider.setVisible (i != 0);
+                          },
+                          909);
+        }
+    }
+
+    // ---------- ENGINE: Frequency split crossover Hz slider (per-Act) ----
+    freqSplitSlider.setRange (80.0, 8000.0, 1.0);
+    freqSplitSlider.setSkewFactorFromMidPoint (500.0);
+    freqSplitSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 72, 22);
+    freqSplitSlider.setTextValueSuffix (" Hz");
+    freqSplitSlider.setValue (proc->getActFreqSplitHz (currentActIdx), juce::dontSendNotification);
+    freqSplitSlider.onValueChange = [this] {
+        proc->setActFreqSplitHz (currentActIdx, (float) freqSplitSlider.getValue());
+    };
+    freqSplitSlider.setVisible (proc->getActFreqSplitMode (currentActIdx) != 0);
+    addAndMakeVisible (freqSplitSlider);
+    allInteractive.push_back (&freqSplitSlider);
+
+    // v0.5.0 — ENGINE/CHARACTER sub-tab buttons within per-Act view.
+    {
+        auto wireSubTab = [this] (juce::TextButton& b, bool isCharTab) {
+            styleSection (b);
+            b.setRadioGroupId (918);
+            b.setToggleState (isCharTab == showCharacterSubTab, juce::dontSendNotification);
+            b.onClick = [this, isCharTab] {
+                showCharacterSubTab = isCharTab;
+                applySubTabVisibility();
+                resized();
+                repaint();
+            };
+            addAndMakeVisible (b);
+            allInteractive.push_back (&b);
+        };
+        wireSubTab (engineSubTab,    false);
+        wireSubTab (characterSubTab, true);
+    }
+
+    // ---------- CHARACTER: Drive Type (Tape/Tube/Diode/Fuzz) per-Act ------
+    {
+        for (int i = 0; i < (int) loopsab::kNumDriveTypes; ++i)
+        {
+            driveTypeButtons[(size_t)i].setButtonText (loopsab::driveShortName (i));
+            wireRadioBtn (driveTypeButtons[(size_t)i],
+                          [this, i] { return proc->getActDriveType (currentActIdx) == i; },
+                          [this, i] { proc->setActDriveType (currentActIdx, i); },
+                          910);
+        }
+    }
+    // ---------- CHARACTER: Fold Topology (Sine/Triangle/Asymmetric) -------
+    {
+        for (int i = 0; i < (int) loopsab::kNumFoldTopologies; ++i)
+        {
+            foldTopologyButtons[(size_t)i].setButtonText (loopsab::foldShortName (i));
+            wireRadioBtn (foldTopologyButtons[(size_t)i],
+                          [this, i] { return proc->getActFoldTopology (currentActIdx) == i; },
+                          [this, i] { proc->setActFoldTopology (currentActIdx, i); },
+                          911);
+        }
+    }
+    // ---------- CHARACTER: Shimmer Octave (+1Oct/+2Oct/-1Oct/+5th/+5th+Oct)
+    {
+        for (int i = 0; i < (int) loopsab::kNumShimmerOctaves; ++i)
+        {
+            shimmerOctaveButtons[(size_t)i].setButtonText (loopsab::shimmerShortName (i));
+            wireRadioBtn (shimmerOctaveButtons[(size_t)i],
+                          [this, i] { return proc->getActShimmerOctave (currentActIdx) == i; },
+                          [this, i] { proc->setActShimmerOctave (currentActIdx, i); },
+                          912);
+        }
+    }
+    // ---------- CHARACTER: Smear Character (Blur/Diffuse/Freeze) ----------
+    {
+        for (int i = 0; i < (int) loopsab::kNumSmearCharacters; ++i)
+        {
+            smearCharacterButtons[(size_t)i].setButtonText (loopsab::smearShortName (i));
+            wireRadioBtn (smearCharacterButtons[(size_t)i],
+                          [this, i] { return proc->getActSmearCharacter (currentActIdx) == i; },
+                          [this, i] { proc->setActSmearCharacter (currentActIdx, i); },
+                          913);
+        }
+    }
+    // ---------- CHARACTER: Stutter Window (Fixed/Decaying/Growing) --------
+    {
+        for (int i = 0; i < (int) loopsab::kNumStutterWindows; ++i)
+        {
+            stutterWindowButtons[(size_t)i].setButtonText (loopsab::stutterShortName (i));
+            wireRadioBtn (stutterWindowButtons[(size_t)i],
+                          [this, i] { return proc->getActStutterWindow (currentActIdx) == i; },
+                          [this, i] { proc->setActStutterWindow (currentActIdx, i); },
+                          914);
+        }
+    }
+    // ---------- CHARACTER: Varispeed Curve (Linear/Exponential/Sudden) ----
+    {
+        for (int i = 0; i < (int) loopsab::kNumVarispeedCurves; ++i)
+        {
+            varispeedCurveButtons[(size_t)i].setButtonText (loopsab::varispeedShortName (i));
+            wireRadioBtn (varispeedCurveButtons[(size_t)i],
+                          [this, i] { return proc->getActVarispeedCurve (currentActIdx) == i; },
+                          [this, i] { proc->setActVarispeedCurve (currentActIdx, i); },
+                          915);
+        }
+    }
+    // ---------- CHARACTER: Slide Curve (Linear/Exponential/Log/S-Curve) ---
+    {
+        for (int i = 0; i < (int) loopsab::kNumSlideCurves; ++i)
+        {
+            slideCurveButtons[(size_t)i].setButtonText (loopsab::slideShortName (i));
+            wireRadioBtn (slideCurveButtons[(size_t)i],
+                          [this, i] { return proc->getActSlideCurve (currentActIdx) == i; },
+                          [this, i] { proc->setActSlideCurve (currentActIdx, i); },
+                          916);
+        }
+    }
+    // ---------- CHARACTER: Reverse Mode (Random/Alternate/Palindrome/PingPong)
+    {
+        for (int i = 0; i < (int) loopsab::kNumReverseModes; ++i)
+        {
+            reverseModeButtons[(size_t)i].setButtonText (loopsab::reverseShortName (i));
+            wireRadioBtn (reverseModeButtons[(size_t)i],
+                          [this, i] { return proc->getActReverseMode (currentActIdx) == i; },
+                          [this, i] { proc->setActReverseMode (currentActIdx, i); },
+                          917);
+        }
+    }
+    // ---------- CHARACTER: Tape Mode (Classic/WowOnly/FlutterOnly/Extreme) --
+    {
+        for (int i = 0; i < (int) loopsab::kNumTapeModes; ++i)
+        {
+            tapeModeButtons[(size_t)i].setButtonText (loopsab::tapeShortName (i));
+            wireRadioBtn (tapeModeButtons[(size_t)i],
+                          [this, i] { return proc->getActTapeMode (currentActIdx) == i; },
+                          [this, i] { proc->setActTapeMode (currentActIdx, i); },
+                          919);
+        }
+    }
+    // ---------- CHARACTER: Ring Mod Waveform (Sine/Square/Triangle/Saw) -----
+    {
+        for (int i = 0; i < (int) loopsab::kNumRingModWaves; ++i)
+        {
+            ringModWaveButtons[(size_t)i].setButtonText (loopsab::ringModWaveShortName (i));
+            wireRadioBtn (ringModWaveButtons[(size_t)i],
+                          [this, i] { return proc->getActRingModWave (currentActIdx) == i; },
+                          [this, i] { proc->setActRingModWave (currentActIdx, i); },
+                          920);
+        }
+    }
+    // ---------- CHARACTER: Chaos Distribution (Uniform/Gaussian/DrunkWalk/BipolarSnap)
+    {
+        for (int i = 0; i < (int) loopsab::kNumChaosDistributions; ++i)
+        {
+            chaosDistributionButtons[(size_t)i].setButtonText (loopsab::chaosShortName (i));
+            wireRadioBtn (chaosDistributionButtons[(size_t)i],
+                          [this, i] { return proc->getActChaosDistribution (currentActIdx) == i; },
+                          [this, i] { proc->setActChaosDistribution (currentActIdx, i); },
+                          921);
+        }
+    }
+    // ---------- CHARACTER: Feedback Character (Clean/Filtered/Saturated/Ducked)
+    {
+        for (int i = 0; i < (int) loopsab::kNumFeedbackCharacters; ++i)
+        {
+            feedbackCharacterButtons[(size_t)i].setButtonText (loopsab::feedbackShortName (i));
+            wireRadioBtn (feedbackCharacterButtons[(size_t)i],
+                          [this, i] { return proc->getActFeedbackCharacter (currentActIdx) == i; },
+                          [this, i] { proc->setActFeedbackCharacter (currentActIdx, i); },
+                          922);
+        }
+    }
+    // ---------- CHARACTER: Stretch Mode (Standard/Paulstretch/Spectral/Formant)
+    {
+        for (int i = 0; i < (int) loopsab::kNumStretchModes; ++i)
+        {
+            stretchModeButtons[(size_t)i].setButtonText (loopsab::stretchShortName (i));
+            wireRadioBtn (stretchModeButtons[(size_t)i],
+                          [this, i] { return proc->getActStretchMode (currentActIdx) == i; },
+                          [this, i] { proc->setActStretchMode (currentActIdx, i); },
+                          923);
+        }
+    }
+    // ---------- CHARACTER: Judder Shape (Even/Accelerating/Decelerating/Random)
+    {
+        for (int i = 0; i < (int) loopsab::kNumJudderShapes; ++i)
+        {
+            judderShapeButtons[(size_t)i].setButtonText (loopsab::judderShortName (i));
+            wireRadioBtn (judderShapeButtons[(size_t)i],
+                          [this, i] { return proc->getActJudderShape (currentActIdx) == i; },
+                          [this, i] { proc->setActJudderShape (currentActIdx, i); },
+                          924);
+        }
+    }
+    // ---------- CHARACTER: Lookback Behaviour (Fixed/Jittered/Quantised)
+    {
+        for (int i = 0; i < (int) loopsab::kNumLookbackBehaviours; ++i)
+        {
+            lookbackBehaviourButtons[(size_t)i].setButtonText (loopsab::lookbackShortName (i));
+            wireRadioBtn (lookbackBehaviourButtons[(size_t)i],
+                          [this, i] { return proc->getActLookbackBehaviour (currentActIdx) == i; },
+                          [this, i] { proc->setActLookbackBehaviour (currentActIdx, i); },
+                          925);
+        }
+    }
+    // ---------- CHARACTER: Decay Curve (Linear/Exponential/Logarithmic/Gate)
+    {
+        for (int i = 0; i < (int) loopsab::kNumDecayCurves; ++i)
+        {
+            decayCurveButtons[(size_t)i].setButtonText (loopsab::decayShortName (i));
+            wireRadioBtn (decayCurveButtons[(size_t)i],
+                          [this, i] { return proc->getActDecayCurve (currentActIdx) == i; },
+                          [this, i] { proc->setActDecayCurve (currentActIdx, i); },
+                          926);
+        }
+    }
 
     // ---------- GRID ACCENT combo (Off + 2..12) ---------------------------
     accentBox.clear (juce::dontSendNotification);
@@ -396,7 +668,7 @@ inline void SettingsPage::buildControls()
         scaleRootBox.clear (juce::dontSendNotification);
         if (rootParam)
         {
-            for (int i = 0; i < rootParam->choices.size(); ++i)
+            for (int i = 0; i < (int) rootParam->choices.size(); ++i)
                 scaleRootBox.addItem (rootParam->choices[i], i + 1);
             scaleRootBox.setSelectedId (rootParam->getIndex() + 1, juce::dontSendNotification);
             scaleRootBox.onChange = [this, rootParam] {
@@ -415,7 +687,7 @@ inline void SettingsPage::buildControls()
         scaleTypeBox.clear (juce::dontSendNotification);
         if (scaleParam)
         {
-            for (int i = 0; i < scaleParam->choices.size(); ++i)
+            for (int i = 0; i < (int) scaleParam->choices.size(); ++i)
                 scaleTypeBox.addItem (scaleParam->choices[i], i + 1);
             scaleTypeBox.setSelectedId (scaleParam->getIndex() + 1, juce::dontSendNotification);
             scaleTypeBox.onChange = [this, scaleParam] {
@@ -446,6 +718,26 @@ inline void SettingsPage::buildControls()
     wireToggleBtn (displayPageFollow,
                    [this] { return proc->getPageFollowsPlayhead(); },
                    [this] (bool v) { proc->setPageFollowsPlayhead (v); });
+
+    // v0.7.0 — "Set as default" saves current UI prefs to disk.
+    setDefaultsBtn.setClickingTogglesState (false);
+    setDefaultsBtn.setColour (juce::TextButton::buttonColourId,  juce::Colour (0xff1a1a1a));
+    setDefaultsBtn.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffbbbbbb));
+    setDefaultsBtn.onClick = [this]
+    {
+        proc->saveGlobalDefaults();
+        // Brief visual feedback: flash the button text.
+        // Use a SafePointer so the timer callback is a no-op if
+        // the SettingsPage is destroyed before it fires.
+        setDefaultsBtn.setButtonText ("Saved!");
+        auto safeThis = juce::Component::SafePointer<SettingsPage> (this);
+        juce::Timer::callAfterDelay (800, [safeThis]
+        {
+            if (safeThis != nullptr)
+                safeThis->setDefaultsBtn.setButtonText ("Set as default");
+        });
+    };
+    addAndMakeVisible (setDefaultsBtn);
 
     // ---------- STEREO radio ----------------------------------------------
     static const char* stLabels[4] = { "Random", "Ping-Pong", "Auto-Pan", "Haas" };
@@ -574,8 +866,11 @@ inline void SettingsPage::updateFromProcessor()
     // Engine: read through per-Act accessors.
     stageBox.setSelectedId (proc->getActEngineStage (currentActIdx) + 1, juce::dontSendNotification);
     outputMixSlider.setValue (proc->getActEngineMix (currentActIdx) * 100.0, juce::dontSendNotification);
+    engineIntensitySlider.setValue (proc->getActEngineIntensity (currentActIdx) * 100.0, juce::dontSendNotification);
     // v0.42 — Output Mix is greyed for CLEAN (no processed signal to mix).
+    // v0.7.0 — Intensity is also greyed for CLEAN.
     outputMixSlider.setEnabled (proc->getActEngineStage (currentActIdx) != (int) kOutClean);
+    engineIntensitySlider.setEnabled (proc->getActEngineStage (currentActIdx) != (int) kOutClean);
 
     for (int i = 0; i < 3; ++i)
         interpButtons[i].setToggleState (proc->getActInterpMode (currentActIdx) == i,
@@ -590,8 +885,53 @@ inline void SettingsPage::updateFromProcessor()
         crunchMuOff.setToggleState (! mu, juce::dontSendNotification);
     }
 
-    recallYes.setToggleState (  proc->getPresetRecallEngine(), juce::dontSendNotification);
-    recallNo .setToggleState (! proc->getPresetRecallEngine(), juce::dontSendNotification);
+    // v0.5.0 — filter mode + frequency split sync.
+    for (int i = 0; i < 4; ++i)
+        filterButtons[i].setToggleState (proc->getActFilterMode (currentActIdx) == i,
+                                          juce::dontSendNotification);
+    for (int i = 0; i < 3; ++i)
+        freqSplitButtons[i].setToggleState (proc->getActFreqSplitMode (currentActIdx) == i,
+                                             juce::dontSendNotification);
+    freqSplitSlider.setValue (proc->getActFreqSplitHz (currentActIdx), juce::dontSendNotification);
+    // Only touch visibility in per-Act view — GLOBAL hides all per-Act controls.
+    if (! showGlobalView)
+        freqSplitSlider.setVisible (! showCharacterSubTab
+                                     && proc->getActFreqSplitMode (currentActIdx) != 0);
+
+    // v0.5.0 — CHARACTER sub-tab sync.
+    for (int i = 0; i < (int) loopsab::kNumDriveTypes; ++i)
+        driveTypeButtons[(size_t)i].setToggleState (proc->getActDriveType (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumFoldTopologies; ++i)
+        foldTopologyButtons[(size_t)i].setToggleState (proc->getActFoldTopology (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumShimmerOctaves; ++i)
+        shimmerOctaveButtons[(size_t)i].setToggleState (proc->getActShimmerOctave (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumSmearCharacters; ++i)
+        smearCharacterButtons[(size_t)i].setToggleState (proc->getActSmearCharacter (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumStutterWindows; ++i)
+        stutterWindowButtons[(size_t)i].setToggleState (proc->getActStutterWindow (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumVarispeedCurves; ++i)
+        varispeedCurveButtons[(size_t)i].setToggleState (proc->getActVarispeedCurve (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumSlideCurves; ++i)
+        slideCurveButtons[(size_t)i].setToggleState (proc->getActSlideCurve (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumReverseModes; ++i)
+        reverseModeButtons[(size_t)i].setToggleState (proc->getActReverseMode (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumTapeModes; ++i)
+        tapeModeButtons[(size_t)i].setToggleState (proc->getActTapeMode (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumRingModWaves; ++i)
+        ringModWaveButtons[(size_t)i].setToggleState (proc->getActRingModWave (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumChaosDistributions; ++i)
+        chaosDistributionButtons[(size_t)i].setToggleState (proc->getActChaosDistribution (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumFeedbackCharacters; ++i)
+        feedbackCharacterButtons[(size_t)i].setToggleState (proc->getActFeedbackCharacter (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumStretchModes; ++i)
+        stretchModeButtons[(size_t)i].setToggleState (proc->getActStretchMode (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumJudderShapes; ++i)
+        judderShapeButtons[(size_t)i].setToggleState (proc->getActJudderShape (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumLookbackBehaviours; ++i)
+        lookbackBehaviourButtons[(size_t)i].setToggleState (proc->getActLookbackBehaviour (currentActIdx) == i, juce::dontSendNotification);
+    for (int i = 0; i < (int) loopsab::kNumDecayCurves; ++i)
+        decayCurveButtons[(size_t)i].setToggleState (proc->getActDecayCurve (currentActIdx) == i, juce::dontSendNotification);
+    applySubTabVisibility();
 
     // v0.42.1 — also sync globalTab. Previously only actTabs were synced
     // here, which meant that after clicking GLOBAL the act-tab re-sync
@@ -699,6 +1039,46 @@ inline void SettingsPage::setCurrentActTab (int actIdx)
         updateFromProcessor();
 }
 
+inline void SettingsPage::applySubTabVisibility()
+{
+    if (showGlobalView) return;  // sub-tabs only matter in per-Act view
+
+    // ENGINE sub-controls: visible when showCharacterSubTab == false
+    const bool engVis = ! showCharacterSubTab;
+    stageBox.setVisible (engVis);
+    outputMixSlider.setVisible (engVis);
+    engineIntensitySlider.setVisible (engVis);
+    for (auto& b : interpButtons) b.setVisible (engVis);
+    crunchAAOn.setVisible (engVis);  crunchAAOff.setVisible (engVis);
+    crunchMuOn.setVisible (engVis);  crunchMuOff.setVisible (engVis);
+    for (auto& b : filterButtons) b.setVisible (engVis);
+    for (auto& b : freqSplitButtons) b.setVisible (engVis);
+    freqSplitSlider.setVisible (engVis && proc && proc->getActFreqSplitMode (currentActIdx) != 0);
+
+    // CHARACTER sub-controls: visible when showCharacterSubTab == true
+    const bool charVis = showCharacterSubTab;
+    for (auto& b : driveTypeButtons) b.setVisible (charVis);
+    for (auto& b : foldTopologyButtons) b.setVisible (charVis);
+    for (auto& b : shimmerOctaveButtons) b.setVisible (charVis);
+    for (auto& b : smearCharacterButtons) b.setVisible (charVis);
+    for (auto& b : stutterWindowButtons) b.setVisible (charVis);
+    for (auto& b : varispeedCurveButtons) b.setVisible (charVis);
+    for (auto& b : slideCurveButtons) b.setVisible (charVis);
+    for (auto& b : reverseModeButtons) b.setVisible (charVis);
+    for (auto& b : tapeModeButtons) b.setVisible (charVis);
+    for (auto& b : ringModWaveButtons) b.setVisible (charVis);
+    for (auto& b : chaosDistributionButtons) b.setVisible (charVis);
+    for (auto& b : feedbackCharacterButtons) b.setVisible (charVis);
+    for (auto& b : stretchModeButtons) b.setVisible (charVis);
+    for (auto& b : judderShapeButtons) b.setVisible (charVis);
+    for (auto& b : lookbackBehaviourButtons) b.setVisible (charVis);
+    for (auto& b : decayCurveButtons) b.setVisible (charVis);
+
+    // Sub-tab buttons themselves are always visible in per-Act mode
+    engineSubTab.setToggleState (! showCharacterSubTab, juce::dontSendNotification);
+    characterSubTab.setToggleState (showCharacterSubTab, juce::dontSendNotification);
+}
+
 inline void SettingsPage::applyViewModeVisibility()
 {
     // Global-scope panels' interactive children.
@@ -706,17 +1086,36 @@ inline void SettingsPage::applyViewModeVisibility()
         &accentBox,
         &transportButtons[0], &transportButtons[1], &transportButtons[2], &transportButtons[3],
         &freezeButtons[0], &freezeButtons[1],
-        &displayWaveform, &displayTooltips, &displayPageFollow,
+        &displayWaveform, &displayTooltips, &displayPageFollow, &setDefaultsBtn,
         &scaleRootBox, &scaleTypeBox,
         &fineToggle,
-        &uiResetButton,
-        &recallYes, &recallNo
+        &uiResetButton
     };
     // Per-Act-scope panels' interactive children.
     juce::Component* perActControls[] = {
-        &stageBox, &outputMixSlider,
+        &stageBox, &outputMixSlider, &engineIntensitySlider,
         &interpButtons[0], &interpButtons[1], &interpButtons[2],
         &crunchAAOn, &crunchAAOff, &crunchMuOn, &crunchMuOff,
+        &filterButtons[0], &filterButtons[1], &filterButtons[2], &filterButtons[3],
+        &freqSplitButtons[0], &freqSplitButtons[1], &freqSplitButtons[2],
+        &freqSplitSlider,
+        &engineSubTab, &characterSubTab,
+        &driveTypeButtons[0], &driveTypeButtons[1], &driveTypeButtons[2], &driveTypeButtons[3],
+        &foldTopologyButtons[0], &foldTopologyButtons[1], &foldTopologyButtons[2],
+        &shimmerOctaveButtons[0], &shimmerOctaveButtons[1], &shimmerOctaveButtons[2], &shimmerOctaveButtons[3], &shimmerOctaveButtons[4],
+        &smearCharacterButtons[0], &smearCharacterButtons[1], &smearCharacterButtons[2],
+        &stutterWindowButtons[0], &stutterWindowButtons[1], &stutterWindowButtons[2],
+        &varispeedCurveButtons[0], &varispeedCurveButtons[1], &varispeedCurveButtons[2],
+        &slideCurveButtons[0], &slideCurveButtons[1], &slideCurveButtons[2], &slideCurveButtons[3],
+        &reverseModeButtons[0], &reverseModeButtons[1], &reverseModeButtons[2], &reverseModeButtons[3],
+        &tapeModeButtons[0], &tapeModeButtons[1], &tapeModeButtons[2], &tapeModeButtons[3],
+        &ringModWaveButtons[0], &ringModWaveButtons[1], &ringModWaveButtons[2], &ringModWaveButtons[3],
+        &chaosDistributionButtons[0], &chaosDistributionButtons[1], &chaosDistributionButtons[2], &chaosDistributionButtons[3],
+        &feedbackCharacterButtons[0], &feedbackCharacterButtons[1], &feedbackCharacterButtons[2], &feedbackCharacterButtons[3],
+        &stretchModeButtons[0], &stretchModeButtons[1], &stretchModeButtons[2], &stretchModeButtons[3],
+        &judderShapeButtons[0], &judderShapeButtons[1], &judderShapeButtons[2], &judderShapeButtons[3],
+        &lookbackBehaviourButtons[0], &lookbackBehaviourButtons[1], &lookbackBehaviourButtons[2],
+        &decayCurveButtons[0], &decayCurveButtons[1], &decayCurveButtons[2], &decayCurveButtons[3],
         &stereoButtons[0], &stereoButtons[1], &stereoButtons[2], &stereoButtons[3],
         &fxAll, &fxDrive, &fxTone, &fxRing, &fxFold, &fxCrunch,
         &ringQuant
@@ -724,6 +1123,8 @@ inline void SettingsPage::applyViewModeVisibility()
 
     for (auto* c : globalControls)  if (c) c->setVisible (  showGlobalView);
     for (auto* c : perActControls)  if (c) c->setVisible (! showGlobalView);
+
+    applySubTabVisibility();
 }
 
 inline void SettingsPage::paintPanelHeader (juce::Graphics& g, juce::Rectangle<int> r,
@@ -806,7 +1207,6 @@ inline void SettingsPage::paint (juce::Graphics& g)
         paintPanelHeader (g, scalePanelR,     "Scale Quantise");
         paintPanelHeader (g, pitchPanelR,     "Pitch / Slide");
         paintPanelHeader (g, uiPanelR,        "UI Scale");
-        paintPanelHeader (g, recallPanelR,    "Presets Recall Engine");
     }
     else
     {
@@ -814,6 +1214,9 @@ inline void SettingsPage::paint (juce::Graphics& g)
         paintPanelHeader (g, stereoPanelR,    "Stereo");
         paintPanelHeader (g, fxPanelR,        "FX on Dry Signal");
         paintPanelHeader (g, ringModPanelR,   "Ring Mod");
+
+        // v0.5.0 — CHARACTER panel header.
+        paintPanelHeader (g, characterPanelR, "Character");
 
         // Sub-headers inside the Engine panel — only meaningful in PER-ACT view.
         // v0.42.2 — bumped to 16pt so sub-sections (OUTPUT STAGE,
@@ -826,34 +1229,84 @@ inline void SettingsPage::paint (juce::Graphics& g)
         g.setFont (subFont);
         g.setColour (juce::Colour (0xffbbbbbb));
 
-        auto eng = enginePanelR.reduced (12, 10).withTrimmedTop (36);
+        // v0.7.0 — compacted to match resized() spacing.
+        auto eng = enginePanelR.reduced (10, 6).withTrimmedTop (36);
         auto label = [&g] (juce::Rectangle<int> rr, const juce::String& txt)
         {
             g.drawText (txt, rr, juce::Justification::centredLeft);
         };
-        eng.removeFromTop (4);
-        label (eng.removeFromTop (20), "OUTPUT STAGE");
-        eng.removeFromTop (30);   // combo height
-        eng.removeFromTop (8);
-        label (eng.removeFromTop (20), "OUTPUT MIX   (WET / DRY OF THE STAGE)");
-        eng.removeFromTop (30);   // slider
-        eng.removeFromTop (8);
-        label (eng.removeFromTop (20), "INTERPOLATION");
-        eng.removeFromTop (30);   // radio row
-        eng.removeFromTop (8);
-        // v0.42.1 — Crunch section rewritten: label + 2 labelled rows
-        // (ANTI-ALIAS FILTER, μ-LAW (S950-STYLE)), each as an explicit
-        // ON/OFF paired radio. "APPLY TO …" moved into the FX on Dry
-        // panel to sit alongside the other dry-signal routings.
-        label (eng.removeFromTop (20), "CRUNCH");
-        eng.removeFromTop (4);
-        label (eng.removeFromTop (18), "ANTI-ALIAS FILTER");
-        eng.removeFromTop (30);   // AA ON/OFF row
-        eng.removeFromTop (4);
-        label (eng.removeFromTop (18),
+        label (eng.removeFromTop (14), "OUTPUT STAGE");
+        eng.removeFromTop (22);   // combo
+        eng.removeFromTop (2);
+        label (eng.removeFromTop (14), "OUTPUT MIX   (WET / DRY OF THE STAGE)");
+        eng.removeFromTop (22);   // slider
+        eng.removeFromTop (2);
+        label (eng.removeFromTop (14), "INTENSITY   (EFFECT DEPTH)");
+        eng.removeFromTop (22);   // slider
+        eng.removeFromTop (3);
+        label (eng.removeFromTop (14), "INTERPOLATION");
+        eng.removeFromTop (22);   // radio row
+        eng.removeFromTop (6);
+        label (eng.removeFromTop (14), "CRUNCH");
+        eng.removeFromTop (2);
+        label (eng.removeFromTop (12), "ANTI-ALIAS FILTER");
+        eng.removeFromTop (22);   // AA ON/OFF row
+        eng.removeFromTop (2);
+        label (eng.removeFromTop (12),
                juce::String::fromUTF8 ("\xce\xbc-LAW   (S950-STYLE COMPANDING)"));
-        eng.removeFromTop (30);   // μ-law ON/OFF row
+        eng.removeFromTop (22);   // μ-law ON/OFF row
+        eng.removeFromTop (3);
+        label (eng.removeFromTop (14), "FILTER MODE");
+        eng.removeFromTop (22);   // filter radio row
+        eng.removeFromTop (3);
+        label (eng.removeFromTop (14), "FREQUENCY SPLIT");
+        eng.removeFromTop (22);   // freq split radio row
+        label (eng.removeFromTop (12), "CROSSOVER");
+        eng.removeFromTop (24);   // crossover slider
         // v0.42 — Preset Recall moved out to its own panel in GLOBAL view.
+
+        // v0.5.0 / v0.6.0 — CHARACTER panel labels (two-column layout).
+        if (! characterPanelR.isEmpty())
+        {
+            // Use a slightly smaller font for the narrower columns.
+            auto charFont = juce::Font (juce::FontOptions ("Impact", 14.0f, juce::Font::plain));
+            charFont.setExtraKerningFactor (0.12f);
+            g.setFont (charFont);
+
+            auto area = characterPanelR.reduced (12, 10).withTrimmedTop (36);
+            const int colGap = 8;
+            const int colW   = (area.getWidth() - colGap) / 2;
+            auto colL = area.removeFromLeft (colW);
+            area.removeFromLeft (colGap);
+            auto colR = area;
+
+            auto labelCol = [&g] (juce::Rectangle<int>& col, const juce::String& txt,
+                                   bool first = false) {
+                col.removeFromTop (first ? 4 : 8);
+                g.drawText (txt, col.removeFromTop (16), juce::Justification::centredLeft);
+                col.removeFromTop (24);
+            };
+
+            // Left column (8 items)
+            labelCol (colL, "DRIVE TYPE",         true);
+            labelCol (colL, "FOLD SHAPE");
+            labelCol (colL, "SHIMMER INTERVAL");
+            labelCol (colL, "SMEAR CHARACTER");
+            labelCol (colL, "STUTTER WINDOW");
+            labelCol (colL, "BRAKE CURVE");
+            labelCol (colL, "SLIDE CURVE");
+            labelCol (colL, "REVERSE MODE");
+
+            // Right column (8 items)
+            labelCol (colR, "TAPE MODE",           true);
+            labelCol (colR, "RING MOD WAVEFORM");
+            labelCol (colR, "CHAOS DISTRIBUTION");
+            labelCol (colR, "FEEDBACK CHARACTER");
+            labelCol (colR, "STRETCH MODE");
+            labelCol (colR, "JUDDER SHAPE");
+            labelCol (colR, "LOOKBACK BEHAVIOUR");
+            labelCol (colR, "DECAY CURVE");
+        }
     }
 
     // v0.42.1 — Ring Mod panel carries a small footer hint telling the
@@ -928,6 +1381,7 @@ inline void SettingsPage::resized()
         // Any per-Act panel rects are zeroed so paint()/layout never
         // references stale geometry from a previous mode.
         enginePanelR   = {};
+        characterPanelR = {};
         stereoPanelR   = {};
         fxPanelR       = {};
         ringModPanelR  = {};
@@ -941,12 +1395,12 @@ inline void SettingsPage::resized()
         // (36pt) header band introduced this version. Without this the
         // first control row sits under the accent-orange title strip.
         layoutStack (colA,
-                     { 70, 98, 98, 138 },
+                     { 70, 88, 88, 168 },
                      { &accentPanelR, &transportPanelR, &freezePanelR,
                        &displayPanelR });
         layoutStack (colB,
-                     { 116, 74, 98, 98 },
-                     { &scalePanelR, &pitchPanelR, &uiPanelR, &recallPanelR });
+                     { 116, 74, 98 },
+                     { &scalePanelR, &pitchPanelR, &uiPanelR });
     }
     else
     {
@@ -959,7 +1413,6 @@ inline void SettingsPage::resized()
         scalePanelR     = {};
         pitchPanelR     = {};
         uiPanelR        = {};
-        recallPanelR    = {};
 
         const int perActW  = bounds.getWidth();
         const int engineW  = juce::jmax (280, (perActW - gap) * 60 / 100);
@@ -967,56 +1420,131 @@ inline void SettingsPage::resized()
         bounds.removeFromLeft (gap);
         auto colMisc   = bounds;
 
-        enginePanelR = colEngine;
+        // v0.5.0 — ENGINE / CHARACTER sub-tab buttons at top of left column.
+        {
+            auto subTabRow = colEngine.removeFromTop (34);
+            const int btnW = subTabRow.getWidth() / 2;
+            engineSubTab.setBounds (subTabRow.removeFromLeft (btnW).reduced (3, 3));
+            characterSubTab.setBounds (subTabRow.reduced (3, 3));
+        }
+        colEngine.removeFromTop (4);
+
+        if (! showCharacterSubTab)
+        {
+            enginePanelR = colEngine;
+            characterPanelR = {};
+        }
+        else
+        {
+            characterPanelR = colEngine;
+            enginePanelR = {};
+        }
 
         // ---------- Engine panel (per-Act) ----------------------------
-        // Geometry mirrors sub-label positions in paint() — keep in sync.
-        // v0.42 — Preset Recall was lifted out into GLOBAL view, so the
-        // Engine panel no longer carries a recall row here.
-        // v0.42.2 — sub-labels bumped 16→20 (main) and 14→18 (crunch
-        // sub-sections); header trim 28→36; vertical reduce 8→10 — must
-        // match the font sizes set in paint() or controls overlap the
-        // labels above them.
+        // v0.7.0 — only lay out engine controls when the panel is live.
+        // v0.7.0 — compacted spacing (gaps 2-3, labels 14, controls 22)
+        // to fit the new Intensity slider without overflowing the panel.
+        if (! enginePanelR.isEmpty())
         {
-            auto eng = enginePanelR.reduced (12, 10).withTrimmedTop (36);
-            eng.removeFromTop (4);
-            eng.removeFromTop (20);                              // "OUTPUT STAGE" label
-            stageBox.setBounds (eng.removeFromTop (30).reduced (0, 2));
-
-            eng.removeFromTop (8);
-            eng.removeFromTop (20);                              // "OUTPUT MIX" label
-            outputMixSlider.setBounds (eng.removeFromTop (30).reduced (0, 2));
-
-            eng.removeFromTop (8);
-            eng.removeFromTop (20);                              // "INTERPOLATION" label
+            auto eng = enginePanelR.reduced (10, 6).withTrimmedTop (36);
+            eng.removeFromTop (14);                              // "OUTPUT STAGE"
+            stageBox.setBounds (eng.removeFromTop (22).reduced (0, 1));
+            eng.removeFromTop (2);
+            eng.removeFromTop (14);                              // "OUTPUT MIX"
+            outputMixSlider.setBounds (eng.removeFromTop (22).reduced (0, 1));
+            eng.removeFromTop (2);
+            eng.removeFromTop (14);                              // "INTENSITY"
+            engineIntensitySlider.setBounds (eng.removeFromTop (22).reduced (0, 1));
+            eng.removeFromTop (3);
+            eng.removeFromTop (14);                              // "INTERPOLATION"
             {
-                auto row = eng.removeFromTop (30);
+                auto row = eng.removeFromTop (22);
                 const int btnW = row.getWidth() / 3;
                 for (int i = 0; i < 3; ++i)
                     interpButtons[i].setBounds (
-                        row.removeFromLeft (i == 2 ? row.getWidth() : btnW).reduced (2, 2));
+                        row.removeFromLeft (i == 2 ? row.getWidth() : btnW).reduced (2, 1));
             }
+            eng.removeFromTop (6);
+            eng.removeFromTop (14);                              // "CRUNCH" header
+            eng.removeFromTop (2);
+            eng.removeFromTop (12);                              // "ANTI-ALIAS FILTER"
+            {
+                auto row = eng.removeFromTop (22);
+                const int btnW = row.getWidth() / 2;
+                crunchAAOn .setBounds (row.removeFromLeft (btnW).reduced (2, 1));
+                crunchAAOff.setBounds (row.reduced (2, 1));
+            }
+            eng.removeFromTop (2);
+            eng.removeFromTop (12);                              // "μ-law ..."
+            {
+                auto row = eng.removeFromTop (22);
+                const int btnW = row.getWidth() / 2;
+                crunchMuOn .setBounds (row.removeFromLeft (btnW).reduced (2, 1));
+                crunchMuOff.setBounds (row.reduced (2, 1));
+            }
+            eng.removeFromTop (3);
+            eng.removeFromTop (14);                              // "FILTER MODE"
+            {
+                auto row = eng.removeFromTop (22);
+                const int btnW = row.getWidth() / 4;
+                for (int i = 0; i < 4; ++i)
+                    filterButtons[i].setBounds (
+                        row.removeFromLeft (i == 3 ? row.getWidth() : btnW).reduced (2, 1));
+            }
+            eng.removeFromTop (3);
+            eng.removeFromTop (14);                              // "FREQUENCY SPLIT"
+            {
+                auto row = eng.removeFromTop (22);
+                const int btnW = row.getWidth() / 3;
+                for (int i = 0; i < 3; ++i)
+                    freqSplitButtons[i].setBounds (
+                        row.removeFromLeft (i == 2 ? row.getWidth() : btnW).reduced (2, 1));
+            }
+            eng.removeFromTop (12);                              // "CROSSOVER"
+            freqSplitSlider.setBounds (eng.removeFromTop (24).reduced (0, 1));
+        }
 
-            eng.removeFromTop (8);
-            eng.removeFromTop (20);                              // "CRUNCH" section header
-            // v0.42.1 — paired ON/OFF radio per sub-setting.
-            // v0.42.2 — sub-label 14→18 to match paint().
-            eng.removeFromTop (4);
-            eng.removeFromTop (18);                              // "ANTI-ALIAS FILTER"
-            {
-                auto row = eng.removeFromTop (30);
-                const int btnW = row.getWidth() / 2;
-                crunchAAOn .setBounds (row.removeFromLeft (btnW).reduced (2, 2));
-                crunchAAOff.setBounds (row.reduced (2, 2));
-            }
-            eng.removeFromTop (4);
-            eng.removeFromTop (18);                              // "μ-law ..." sub-label
-            {
-                auto row = eng.removeFromTop (30);
-                const int btnW = row.getWidth() / 2;
-                crunchMuOn .setBounds (row.removeFromLeft (btnW).reduced (2, 2));
-                crunchMuOff.setBounds (row.reduced (2, 2));
-            }
+        // v0.5.0 / v0.6.0 — CHARACTER panel layout (two-column, replaces
+        // Engine when sub-tab active). 16 options split into 2 cols of 8.
+        if (! characterPanelR.isEmpty())
+        {
+            auto area = characterPanelR.reduced (12, 10).withTrimmedTop (36);
+            const int colGap = 8;
+            const int colW   = (area.getWidth() - colGap) / 2;
+            auto colL = area.removeFromLeft (colW);
+            area.removeFromLeft (colGap);
+            auto colR = area;
+
+            auto layoutRadioRow = [] (juce::Rectangle<int>& col, auto& buttons,
+                                       int count, bool first = false) {
+                col.removeFromTop (first ? 4 : 8);
+                col.removeFromTop (16);   // label space (painted by paint())
+                auto row = col.removeFromTop (24);
+                const int btnW = row.getWidth() / count;
+                for (int i = 0; i < count; ++i)
+                    buttons[(size_t)i].setBounds (
+                        row.removeFromLeft (i == count - 1 ? row.getWidth() : btnW).reduced (1, 1));
+            };
+
+            // Left column (8 items)
+            layoutRadioRow (colL, driveTypeButtons,        (int) loopsab::kNumDriveTypes,        true);
+            layoutRadioRow (colL, foldTopologyButtons,     (int) loopsab::kNumFoldTopologies);
+            layoutRadioRow (colL, shimmerOctaveButtons,    (int) loopsab::kNumShimmerOctaves);
+            layoutRadioRow (colL, smearCharacterButtons,   (int) loopsab::kNumSmearCharacters);
+            layoutRadioRow (colL, stutterWindowButtons,    (int) loopsab::kNumStutterWindows);
+            layoutRadioRow (colL, varispeedCurveButtons,   (int) loopsab::kNumVarispeedCurves);
+            layoutRadioRow (colL, slideCurveButtons,       (int) loopsab::kNumSlideCurves);
+            layoutRadioRow (colL, reverseModeButtons,      (int) loopsab::kNumReverseModes);
+
+            // Right column (8 items)
+            layoutRadioRow (colR, tapeModeButtons,         (int) loopsab::kNumTapeModes,         true);
+            layoutRadioRow (colR, ringModWaveButtons,      (int) loopsab::kNumRingModWaves);
+            layoutRadioRow (colR, chaosDistributionButtons,(int) loopsab::kNumChaosDistributions);
+            layoutRadioRow (colR, feedbackCharacterButtons,(int) loopsab::kNumFeedbackCharacters);
+            layoutRadioRow (colR, stretchModeButtons,      (int) loopsab::kNumStretchModes);
+            layoutRadioRow (colR, judderShapeButtons,      (int) loopsab::kNumJudderShapes);
+            layoutRadioRow (colR, lookbackBehaviourButtons,(int) loopsab::kNumLookbackBehaviours);
+            layoutRadioRow (colR, decayCurveButtons,       (int) loopsab::kNumDecayCurves);
         }
 
         // ---------- Per-Act misc column -------------------------------
@@ -1027,7 +1555,7 @@ inline void SettingsPage::resized()
         // footer band on Ring Mod. FX panel in particular gets +12 to
         // keep its six toggles clear of the new 36pt header.
         layoutStack (colMisc,
-                     { 98, 256, 98 },
+                     { 88, 256, 108 },
                      { &stereoPanelR, &fxPanelR, &ringModPanelR });
     }
 
@@ -1060,6 +1588,8 @@ inline void SettingsPage::resized()
         displayWaveform .setBounds (inner.removeFromTop (30).reduced (2, 2));
         displayTooltips .setBounds (inner.removeFromTop (30).reduced (2, 2));
         displayPageFollow.setBounds (inner.removeFromTop (30).reduced (2, 2));
+        inner.removeFromTop (6);
+        setDefaultsBtn.setBounds (inner.removeFromTop (26).reduced (2, 2));
     }
     // UI SCALE
     {
@@ -1112,13 +1642,6 @@ inline void SettingsPage::resized()
     {
         auto inner = pitchPanelR.reduced (10, 40).withHeight (30);
         fineToggle.setBounds (inner.reduced (2, 2));
-    }
-    // v0.42 — PRESET RECALL ENGINE (now its own panel in GLOBAL view).
-    {
-        auto inner = recallPanelR.reduced (10, 40).withHeight (34);
-        const int btnW = inner.getWidth() / 2;
-        recallYes.setBounds (inner.removeFromLeft (btnW).reduced (2, 2));
-        recallNo .setBounds (inner.reduced (2, 2));
     }
 }
 
