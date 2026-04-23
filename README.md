@@ -7,6 +7,8 @@ retriggered, pitched, reversed, and crushed slices.
 
 AU / VST3 on macOS. VST3 on Windows.
 
+**[Read the manual](docs/MANUAL.md)**
+
 ## Dependencies
 
 - [JUCE 8](https://github.com/juce-framework/JUCE)
