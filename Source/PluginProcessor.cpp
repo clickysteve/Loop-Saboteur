@@ -5188,12 +5188,13 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                             : paramsFromKnobs();
                         if (scenelessRatchet)
                         {
-                            // v0.44 — clean dry retrigger: grab the most
-                            // recent audio (shortest lookback), play at
-                            // unity rate, no FX, no pitch, no judder.
-                            params.lookbackIdx = 0;   // 1/128 — grab what just came in
-                            params.rateIdx     = 3;   // 1× playback speed
-                            params.judderCount = 1;   // no stutter
+                            // v0.9.1 — ratchet on a blank step: use the
+                            // knob settings for division/lookback/rate so
+                            // the ratchet chops a real slice of audio.
+                            // Always quantised so it locks to the beat.
+                            // Strip FX and pitch so it's a clean retrigger.
+                            params.lookbackBehaviour = (int) loopsab::kLookbackQuantised;
+                            params.judderCount = 1;
                             params.mix         = 1.0f;
                             params.globalMix   = 1.0f;
                             params.pitchSt     = 0.0f;
@@ -5203,7 +5204,7 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                             params.crunch      = 0.0f;
                             params.crushRate   = 0.0f;
                             params.drive       = 0.0f;
-                            params.tone        = 0.0f;
+                            params.tone        = 0.5f;   // bypass (not 0 = dark)
                             params.feedback    = 0.0f;
                             params.tape        = 0.0f;
                             params.ringMod     = 0.0f;
