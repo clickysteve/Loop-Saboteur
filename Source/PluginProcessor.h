@@ -1632,6 +1632,13 @@ private:
     std::atomic<float> dbgLastFireTimingUs { 0.0f }; // last fire timing error in µs
     std::atomic<bool>  dbgForceFire     { false };   // message-thread → audio-thread flag
 
+#ifdef LOOPSAB_DEMO
+    // Demo build: periodic silence. Counts samples through a 35-second
+    // cycle; the last 5 seconds of each cycle are muted.
+    int64_t demoSampleCounter = 0;
+    std::atomic<bool> demoIsMuted { false };
+#endif
+
     // Voice snapshot — written at the end of each processBlock.
     // Not atomic per-field; we accept occasional tearing since it's
     // only for the debug display.

@@ -1,4 +1,4 @@
-name: Windows Build
+name: Linux Build
 
 on:
   push:
@@ -7,30 +7,47 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Install JUCE dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libjack-jackd2-dev \
+            libfreetype6-dev \
+            libx11-dev \
+            libxcomposite-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            libwebkit2gtk-4.0-dev \
+            libcurl4-openssl-dev \
+            libgl1-mesa-dev \
+            mesa-common-dev
+
       - name: Clone JUCE
         run: git clone --depth 1 --branch 8.0.4 https://github.com/juce-framework/JUCE.git JUCE
 
-      - name: Configure (CMake + Visual Studio)
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build VST3
-        run: cmake --build build --config Release --target LoopSaboteur_VST3
+        run: cmake --build build --config Release --target LoopSaboteur_VST3 --parallel
 
       - name: Extract version from CMakeLists.txt
         id: version
-        shell: bash
         run: |
           ver=$(sed -n 's/.*project(LoopSaboteur VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
 
       - name: Package full build
-        shell: bash
         run: |
           mkdir -p staging
           cp -r "build/LoopSaboteur_artefacts/Release/VST3/Loop Saboteur.vst3" staging/
@@ -38,19 +55,18 @@ jobs:
       - name: Upload full build
         uses: actions/upload-artifact@v4
         with:
-          name: Loop-Saboteur-Windows-v${{ steps.version.outputs.ver }}
+          name: Loop-Saboteur-Linux-v${{ steps.version.outputs.ver }}
           path: staging/
           retention-days: 90
 
       # --- Demo build ---
       - name: Configure Demo
-        run: cmake -B build_demo -G "Visual Studio 17 2022" -A x64 -DLOOPSAB_DEMO=ON
+        run: cmake -B build_demo -DCMAKE_BUILD_TYPE=Release -DLOOPSAB_DEMO=ON
 
       - name: Build Demo VST3
-        run: cmake --build build_demo --config Release --target LoopSaboteur_VST3
+        run: cmake --build build_demo --config Release --target LoopSaboteur_VST3 --parallel
 
       - name: Package demo build
-        shell: bash
         run: |
           mkdir -p staging_demo
           cp -r "build_demo/LoopSaboteur_artefacts/Release/VST3/Loop Saboteur.vst3" staging_demo/
@@ -58,6 +74,6 @@ jobs:
       - name: Upload demo build
         uses: actions/upload-artifact@v4
         with:
-          name: Loop-Saboteur-Windows-v${{ steps.version.outputs.ver }}-DEMO
+          name: Loop-Saboteur-Linux-v${{ steps.version.outputs.ver }}-DEMO
           path: staging_demo/
           retention-days: 90

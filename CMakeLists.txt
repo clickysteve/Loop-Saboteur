@@ -49,6 +49,15 @@ target_include_directories(LoopSaboteur
 # ---------- C++17 ----------
 target_compile_features(LoopSaboteur PRIVATE cxx_std_17)
 
+# ---------- Demo build flag ----------
+# Pass -DLOOPSAB_DEMO=ON to produce a demo build that mutes output
+# for 3 seconds every 45 seconds.
+option(LOOPSAB_DEMO "Build demo version with periodic silence" OFF)
+if(LOOPSAB_DEMO)
+    target_compile_definitions(LoopSaboteur PRIVATE LOOPSAB_DEMO=1)
+    message(STATUS "LoopSaboteur: DEMO BUILD (periodic silence enabled)")
+endif()
+
 # ---------- Compile definitions ----------
 target_compile_definitions(LoopSaboteur
     PUBLIC

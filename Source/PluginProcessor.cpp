@@ -7128,6 +7128,30 @@ void LoopSaboteurProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         s.voiceMix = voice.voiceMix;
     }
 
+#ifdef LOOPSAB_DEMO
+    // Demo build: mute output for 5 seconds out of every 35-second cycle.
+    // The counter runs continuously regardless of transport state.
+    {
+        const int64_t cycleLen  = (int64_t) (sampleRate * 35.0);
+        const int64_t muteStart = (int64_t) (sampleRate * 30.0); // last 5 seconds
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            const int64_t pos = demoSampleCounter % cycleLen;
+            if (pos >= muteStart)
+            {
+                for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                    buffer.getWritePointer (ch)[i] = 0.0f;
+            }
+            ++demoSampleCounter;
+        }
+
+        // Expose mute state so the editor can show a banner.
+        const int64_t endPos = demoSampleCounter % cycleLen;
+        demoIsMuted.store (endPos >= muteStart);
+    }
+#endif
+
     // v0.30 — debug: CPU watchdog. Compare wall time to buffer time.
     {
         const auto dbgBlockEnd = std::chrono::high_resolution_clock::now();

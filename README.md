@@ -5,7 +5,7 @@ tradition. Captures the last ~4 bars of incoming audio into a rolling
 buffer and uses a host-synced step sequencer to sabotage it with
 retriggered, pitched, reversed, and crushed slices.
 
-AU / VST3 on macOS. VST3 on Windows.
+AU / VST3 on macOS. VST3 on Windows and Linux.
 
 **[Read the manual](https://clickysteve.github.io/Loop-Saboteur/)**
 

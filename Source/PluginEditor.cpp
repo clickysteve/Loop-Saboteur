@@ -1649,8 +1649,11 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
                                               260, 14);
         g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
         g.setColour (Col::accent);
-        const juce::String verStr = juce::String ("v")
-                                    + juce::String (JucePlugin_VersionString);
+        juce::String verStr = juce::String ("v")
+                             + juce::String (JucePlugin_VersionString);
+#ifdef LOOPSAB_DEMO
+        verStr += " DEMO";
+#endif
         g.drawFittedText (verStr, verArea, juce::Justification::bottomLeft, 1);
         const int verW = (int) g.getCurrentFont().getStringWidthFloat (verStr) + 8;
         auto amfasArea = verArea.withTrimmedLeft (verW);
@@ -1995,6 +1998,25 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
         g.drawText (tagText, tagBox.reduced (padX, padY),
                     juce::Justification::centredLeft);
     }
+
+#ifdef LOOPSAB_DEMO
+    // Demo banner — always visible, flashes red background during mute periods.
+    {
+        const bool muted = processor.demoIsMuted.load();
+        auto bounds = innerContent.getLocalBounds();
+        auto bannerArea = bounds.withHeight (28).withY (bounds.getCentreY() - 14);
+
+        g.setColour (muted ? juce::Colour (0xeecc2222)
+                           : juce::Colour (0xaa222222));
+        g.fillRect (bannerArea);
+
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::Font (juce::FontOptions (16.0f, juce::Font::bold)));
+        g.drawText (muted ? "DEMO — OUTPUT MUTED — get the full version at allmyfriendsaresynths.com"
+                          : "DEMO — get the full version at allmyfriendsaresynths.com to remove silence",
+                    bannerArea, juce::Justification::centred);
+    }
+#endif
 }
 
 // ============================================================================
