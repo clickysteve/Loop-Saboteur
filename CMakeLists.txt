@@ -80,6 +80,19 @@ target_link_libraries(LoopSaboteur
         juce::juce_recommended_warning_flags
 )
 
+# ---------- CLAP format (via clap-juce-extensions) ----------
+include(FetchContent)
+FetchContent_Declare(clap-juce-extensions
+    GIT_REPOSITORY https://github.com/free-audio/clap-juce-extensions.git
+    GIT_TAG        main
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(clap-juce-extensions)
+
+clap_juce_extensions_plugin(TARGET LoopSaboteur
+    CLAP_ID        "com.amfas.loopsaboteur"
+    CLAP_FEATURES  audio-effect glitch crusher)
+
 # ---------- macOS Developer ID code signing ----------
 # Leave LOOPSAB_CODESIGN_IDENTITY empty for unsigned local dev builds. Set it at
 # configure time to enable signing, e.g.:
@@ -98,7 +111,7 @@ if(APPLE AND LOOPSAB_CODESIGN_IDENTITY)
             "Codesign requested but entitlements file not found: ${LOOPSAB_ENTITLEMENTS}")
     endif()
 
-    foreach(fmt IN ITEMS AU VST3)
+    foreach(fmt IN ITEMS AU VST3 CLAP)
         set(signed_target "LoopSaboteur_${fmt}")
         if(TARGET ${signed_target})
             add_custom_command(TARGET ${signed_target} POST_BUILD

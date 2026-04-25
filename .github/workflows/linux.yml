@@ -38,8 +38,10 @@ jobs:
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build VST3
-        run: cmake --build build --config Release --target LoopSaboteur_VST3 --parallel
+      - name: Build VST3 + CLAP
+        run: |
+          cmake --build build --config Release --target LoopSaboteur_VST3 --parallel
+          cmake --build build --config Release --target LoopSaboteur_CLAP --parallel
 
       - name: Extract version from CMakeLists.txt
         id: version
@@ -51,6 +53,7 @@ jobs:
         run: |
           mkdir -p staging
           cp -r "build/LoopSaboteur_artefacts/Release/VST3/Loop Saboteur.vst3" staging/
+          cp -r "build/LoopSaboteur_artefacts/Release/CLAP/Loop Saboteur.clap" staging/
 
       - name: Upload full build
         uses: actions/upload-artifact@v4
@@ -63,13 +66,16 @@ jobs:
       - name: Configure Demo
         run: cmake -B build_demo -DCMAKE_BUILD_TYPE=Release -DLOOPSAB_DEMO=ON
 
-      - name: Build Demo VST3
-        run: cmake --build build_demo --config Release --target LoopSaboteur_VST3 --parallel
+      - name: Build Demo VST3 + CLAP
+        run: |
+          cmake --build build_demo --config Release --target LoopSaboteur_VST3 --parallel
+          cmake --build build_demo --config Release --target LoopSaboteur_CLAP --parallel
 
       - name: Package demo build
         run: |
           mkdir -p staging_demo
           cp -r "build_demo/LoopSaboteur_artefacts/Release/VST3/Loop Saboteur.vst3" staging_demo/
+          cp -r "build_demo/LoopSaboteur_artefacts/Release/CLAP/Loop Saboteur.clap" staging_demo/
 
       - name: Upload demo build
         uses: actions/upload-artifact@v4
