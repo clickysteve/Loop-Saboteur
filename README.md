@@ -7,7 +7,7 @@ retriggered, pitched, reversed, and crushed slices.
 
 AU / VST3 on macOS. VST3 on Windows.
 
-**[Read the manual](docs/MANUAL.md)**
+**[Read the manual](https://clickysteve.github.io/Loop-Saboteur/)**
 
 ## Dependencies
 
