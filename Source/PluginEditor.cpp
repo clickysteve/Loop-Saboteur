@@ -2002,7 +2002,7 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
 #ifdef LOOPSAB_DEMO
     // Demo banner — always visible, flashes red background during mute periods.
     {
-        const bool muted = processorRef.demoIsMuted.load();
+        const bool muted = processorRef.isDemoMuted();
         auto bounds = innerContent.getLocalBounds();
         auto bannerArea = bounds.withHeight (28).withY (bounds.getCentreY() - 14);
 

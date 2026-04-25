@@ -601,6 +601,10 @@ public:
         return dbgCpuWorstCase.exchange (0.0f);
     }
 
+#ifdef LOOPSAB_DEMO
+    bool isDemoMuted() const noexcept { return demoIsMuted.load(); }
+#endif
+
     // Voice state snapshot — copied from the audio thread's voice struct
     // at the end of each processBlock so the UI can display it.
     struct VoiceSnapshot
