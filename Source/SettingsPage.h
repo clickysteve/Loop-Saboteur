@@ -26,6 +26,7 @@
 #include <memory>
 #include "PluginProcessor.h"
 #include "OutputStage.h"
+#include "FontHelper.h"
 
 namespace loopsab {
 
@@ -1141,7 +1142,7 @@ inline void SettingsPage::paintPanelHeader (juce::Graphics& g, juce::Rectangle<i
     // squashed at 17pt against the now-bigger hint + controls below).
     auto headerBand = r.removeFromTop (36).reduced (12, 6);
     g.setColour (juce::Colour (0xffff5a3c));
-    auto font = juce::Font (juce::FontOptions ("Impact", 22.0f, juce::Font::plain));
+    auto font = FontHelper::impact (22.0f, juce::Font::plain);
     font.setExtraKerningFactor (0.18f);
     g.setFont (font);
     g.drawText (title.toUpperCase(), headerBand, juce::Justification::centredLeft);
@@ -1160,7 +1161,7 @@ inline void SettingsPage::paint (juce::Graphics& g)
     // Title header in big sheared Impact, same vibe as MOD.
     auto titleR = headerR.toFloat();
     g.setColour (juce::Colour (0xffff5a3c));
-    auto font = juce::Font (juce::FontOptions ("Impact", 28.0f, juce::Font::plain));
+    auto font = FontHelper::impact (28.0f, juce::Font::plain);
     font.setExtraKerningFactor (0.15f);
     g.setFont (font);
     const float anchorY = titleR.getCentreY();
@@ -1181,7 +1182,7 @@ inline void SettingsPage::paint (juce::Graphics& g)
         // v0.42.1 — hint font bumped 12pt → 17pt so the mode indicator is
         // legible at a glance. Width still capped to the 30% strip we
         // reserved in resized() so it won't overrun the tab buttons.
-        auto hintFont = juce::Font (juce::FontOptions ("Impact", 17.0f, juce::Font::plain));
+        auto hintFont = FontHelper::impact (17.0f, juce::Font::plain);
         hintFont.setExtraKerningFactor (0.14f);
         g.setFont (hintFont);
         g.setColour (juce::Colour (0xffcccccc));
@@ -1224,7 +1225,7 @@ inline void SettingsPage::paint (juce::Graphics& g)
         // against the new 22pt panel headers. Darker text colour too so
         // the hierarchy stays visible: headers = accent orange, sub-labels
         // = light grey, footnotes = dim grey.
-        auto subFont = juce::Font (juce::FontOptions ("Impact", 16.0f, juce::Font::plain));
+        auto subFont = FontHelper::impact (16.0f, juce::Font::plain);
         subFont.setExtraKerningFactor (0.14f);
         g.setFont (subFont);
         g.setColour (juce::Colour (0xffbbbbbb));
@@ -1269,7 +1270,7 @@ inline void SettingsPage::paint (juce::Graphics& g)
         if (! characterPanelR.isEmpty())
         {
             // Use a slightly smaller font for the narrower columns.
-            auto charFont = juce::Font (juce::FontOptions ("Impact", 14.0f, juce::Font::plain));
+            auto charFont = FontHelper::impact (14.0f, juce::Font::plain);
             charFont.setExtraKerningFactor (0.12f);
             g.setFont (charFont);
 
@@ -1316,7 +1317,7 @@ inline void SettingsPage::paint (juce::Graphics& g)
     // 22pt-high footer slot so it no longer overlaps the toggle above it.
     if (! showGlobalView && ! ringModPanelR.isEmpty())
     {
-        auto hintFont = juce::Font (juce::FontOptions ("Impact", 14.0f, juce::Font::plain));
+        auto hintFont = FontHelper::impact (14.0f, juce::Font::plain);
         hintFont.setExtraKerningFactor (0.13f);
         g.setFont (hintFont);
         g.setColour (juce::Colour (0xff999999));

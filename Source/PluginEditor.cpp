@@ -147,14 +147,14 @@ void LoopSaboteurEditor::StepCell::paint (juce::Graphics& g)
     {
         // Accented act = orange letter on dark bg (inverted). Normal = dark on orange.
         g.setColour (accentedAct ? Col::accent : Col::bg);
-        g.setFont (juce::Font (juce::FontOptions ("Impact", 28.0f, juce::Font::plain)));
+        g.setFont (FontHelper::impact (28.0f, juce::Font::plain));
         const juce::String letter (juce::String::charToString ((juce::juce_wchar) ('A' + scene)));
         g.drawText (letter, topZone.toNearestInt(), juce::Justification::centred);
     }
     else
     {
         g.setColour (juce::Colour (0xff444444));
-        g.setFont (juce::Font (juce::FontOptions ("Impact", 20.0f, juce::Font::plain)));
+        g.setFont (FontHelper::impact (20.0f, juce::Font::plain));
         g.drawText (juce::String::fromUTF8 ("\xe2\x80\x93"),
                     topZone.toNearestInt(), juce::Justification::centred);
     }
@@ -1609,7 +1609,7 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
         const juce::String baseTitle = isAprilFool ? "LOOP DEFENDER"
                                                    : "LOOP SABOTEUR";
 
-        auto titleFont = juce::Font (juce::FontOptions ("Impact", 32.0f, juce::Font::plain));
+        auto titleFont = FontHelper::impact (32.0f, juce::Font::plain);
         g.setFont (titleFont);
         auto titleTextArea = titleArea.withTrimmedLeft (20).withTrimmedRight (420);
 
@@ -1728,7 +1728,7 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
         const float stripeW = (float) stripe.getWidth();
         const float fontPt  = juce::jlimit (28.0f, 46.0f, stripeW * 0.72f);
 
-        auto font = juce::Font (juce::FontOptions ("Impact", fontPt, juce::Font::plain));
+        auto font = FontHelper::impact (fontPt, juce::Font::plain);
         font.setExtraKerningFactor (0.04f);
 
         // Before rotation the text is laid out horizontally. Its horizontal
@@ -1792,7 +1792,7 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
                                 .sheared (-0.14f, 0.0f)
                                 .translated (0.0f, anchorY));
             g.setColour (Col::accent);
-            auto catFont = juce::Font (juce::FontOptions ("Impact", 26.0f, juce::Font::plain));
+            auto catFont = FontHelper::impact (26.0f, juce::Font::plain);
             catFont.setExtraKerningFactor (0.18f);
             g.setFont (catFont);
             // Easter egg: CRUNCH → PAULA when 8-bit is active.
@@ -1835,7 +1835,7 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
                             .sheared (-0.14f, 0.0f)
                             .translated (0.0f, anchorY));
         g.setColour (Col::accent);
-        auto actsFont = juce::Font (juce::FontOptions ("Impact", 20.0f, juce::Font::plain));
+        auto actsFont = FontHelper::impact (20.0f, juce::Font::plain);
         actsFont.setExtraKerningFactor (0.16f);
         g.setFont (actsFont);
         g.drawText (amenActive ? "AMEN OF SABOTAGE" : "ACTS OF SABOTAGE",
@@ -1968,7 +1968,7 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
         g.setColour (Col::accent);
         g.drawRoundedRectangle (box.toFloat().reduced (0.5f), 6.0f, 1.2f);
         g.setColour (juce::Colour (0xffe8e8e8));
-        g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::plain)));
+        g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::plain));
         g.drawFittedText (txt, box.reduced (10, 0),
                           juce::Justification::centred, 1);
     }
@@ -6638,7 +6638,7 @@ void LoopSaboteurEditor::ModPage::paint (juce::Graphics& g)
     // Title header with Impact font skew
     auto headerR = r.withHeight (50.0f);
     g.setColour (juce::Colour (0xffff5a3c));
-    auto font = juce::Font (juce::FontOptions ("Impact", 28.0f, juce::Font::plain));
+    auto font = FontHelper::impact (28.0f, juce::Font::plain);
     font.setExtraKerningFactor (0.15f);
     g.setFont (font);
     float anchorY = headerR.getCentreY();
@@ -6895,7 +6895,7 @@ void LoopSaboteurEditor::ModPage::setupLfoControls()
         shapeLabels[lfo].setText (shapeLabel, juce::dontSendNotification);
         shapeLabels[lfo].setJustificationType (juce::Justification::centredLeft);
         shapeLabels[lfo].setColour (juce::Label::textColourId, juce::Colour (0xffff5a3c));
-        shapeLabels[lfo].setFont (juce::Font ("Impact", 20.0f, juce::Font::plain));
+        shapeLabels[lfo].setFont (FontHelper::impact (20.0f));
         addAndMakeVisible (shapeLabels[lfo]);
 
         shapeBoxes[lfo].clear();

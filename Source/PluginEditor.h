@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
+#include "FontHelper.h"
 #include "SettingsPage.h"
 
 // ============================================================================
@@ -472,7 +473,7 @@ private:
                                 .sheared (-0.10f, 0.0f)
                                 .translated (0.0f, anchorY));
             g.setColour (juce::Colour (0xffff5a3c));
-            auto hdrFont = juce::Font (juce::FontOptions ("Impact", 16.0f, juce::Font::plain));
+            auto hdrFont = FontHelper::impact (16.0f);
             hdrFont.setExtraKerningFactor (0.18f);
             g.setFont (hdrFont);
             g.drawText (sectionName, textR, juce::Justification::bottomLeft);
@@ -857,7 +858,7 @@ private:
             }
 
             g.setColour (txt);
-            g.setFont (juce::Font (juce::FontOptions ("Impact", 22.0f, juce::Font::plain)));
+            g.setFont (FontHelper::impact (22.0f));
             g.drawText (getButtonText(), getLocalBounds(),
                         juce::Justification::centred, false);
         }
@@ -1586,7 +1587,7 @@ private:
 
             // Title.
             g.setColour (juce::Colour (0xffeeeeee));
-            g.setFont (juce::Font ("Impact", 18.0f, juce::Font::plain));
+            g.setFont (FontHelper::impact (18.0f));
             g.drawText ("SAVE USER PRESET", card.removeFromTop (40),
                         juce::Justification::centred, true);
 
@@ -1595,7 +1596,7 @@ private:
             auto inner = getDialogBounds().reduced (pad);
             inner.removeFromTop (40);  // skip title
 
-            g.setFont (juce::Font ("Impact", 13.0f, juce::Font::plain));
+            g.setFont (FontHelper::impact (13.0f));
             g.setColour (juce::Colour (0xffaaaaaa));
             g.drawText ("NAME", inner.removeFromTop (18),
                         juce::Justification::centredLeft, true);
