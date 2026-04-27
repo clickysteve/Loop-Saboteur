@@ -77,15 +77,10 @@ target_link_libraries(LoopSaboteur
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
-        juce::juce_recommended_warning_flags
+        # NB: juce_recommended_warning_flags deliberately omitted — it enables
+        # -Werror on GCC/Clang, and GCC's -Wsign-conversion fires on every
+        # std::array access with an int index, breaking the Linux CI.
 )
-
-# JUCE's recommended_warning_flags enables -Werror on GCC/Clang, which
-# breaks the Linux build due to -Wsign-conversion on std::array indexing
-# with int loop counters. Suppress that specific warning on GCC.
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-    target_compile_options(LoopSaboteur PRIVATE -Wno-sign-conversion)
-endif()
 
 # ---------- CLAP format (via clap-juce-extensions) ----------
 include(FetchContent)

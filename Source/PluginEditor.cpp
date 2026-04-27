@@ -1968,7 +1968,7 @@ void LoopSaboteurEditor::paintContent (juce::Graphics& g)
         g.setColour (Col::accent);
         g.drawRoundedRectangle (box.toFloat().reduced (0.5f), 6.0f, 1.2f);
         g.setColour (juce::Colour (0xffe8e8e8));
-        g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::plain));
+        g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::plain)));
         g.drawFittedText (txt, box.reduced (10, 0),
                           juce::Justification::centred, 1);
     }
